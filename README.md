@@ -41,11 +41,9 @@ newlib-nano on Cortex-M4: ~1 frame in 150 may differ).
 
 A single, small, embedded-friendly vocoder suite for VHF digital voice:
 
-- [x] M17 full rate (3200)
-- [x] M17 half rate (1600)
-- [x] Codec2 1300
-- [ ] SLATE (KV4P-HT / host-side modem projects)
-- [ ] FreeDV 2400A (5 kHz 4FSK) and 2400B (2-tone FSK for FM channels)
+- [x] M17, Full rate voice (3200)
+- [x] M17 HR (Legacy), SLATE (1600)
+- [x] Codec2 1300 (FreeDV2400A/B)
 
 ## API
 
@@ -116,6 +114,69 @@ KiB flash vs 167.2 KiB reference; 19.6 KiB static encoder state,
 16.2 KiB decoder state, ~1 KiB encode stack.  The 1600 mode adds two
 extra 10 ms analyses and one scalar-LSP search per 40 ms frame and
 stays comfortably real time on the same class of hardware.
+
+## Benchmarks
+
+Tooling: `tests/bench.c` (host timing, `cmake --build build --target bench`),
+`tools/size_report.sh` + `tools/stack_calc.py` (static Cortex-M4 footprint,
+same methodology as Codec2-mod: `-Os`, newlib-nano, `--gc-sections`,
+`-fstack-usage` call-graph analysis).  Reference figures are a from-source
+codec2 1.2 build with identical flags (`-O3 -ffp-contract=off`), heap size
+measured with a malloc counter.
+
+Host timing (x86-64, hts1a, 30 passes, avg per frame):
+
+| Task  | ref 3200 | vhf 3200 | ref 1600 | vhf 1600 | ref 1300 | vhf 1300 |
+|-------|----------|----------|----------|----------|----------|----------|
+| encode| 34.6 us  | **16.9** | 74.4 us  | **33.0** | 61.9 us  | **29.7** |
+| decode| 20.9 us  | 21.5     | 45.8 us  | **42.4** | 42.2 us  | 42.5     |
+
+The encoder runs ~2x faster than reference in every mode (matching the
+2.7x Codec2-mod measured on STM32); on the host the decoder advantage
+of the mod mostly disappears.  Notably, per second of audio every mode
+costs about the same to encode (~0.85 us/ms): the 10 ms analysis
+pipeline dominates, and the longer frames of 1600/1300 exactly
+compensate for their extra analyses.
+
+RAM (static, caller-owned; identical for all three modes since the
+analysis/synthesis state is shared):
+
+| State               | codec2-vhf        | reference (heap, measured) |
+|---------------------|-------------------|----------------------------|
+| encoder-only        | 20,040 B          | 30,748 B (enc+dec in one)  |
+| decoder-only        | 16,600 B          | (same instance)            |
+| full duplex         | 36,640 B          | 30,748 B                   |
+
+Reference is smaller for full duplex, but an encoder-only or
+decoder-only build (modem separate from codec) saves 35-46 % RAM.
+Extra modes cost no additional state.
+
+Flash (Cortex-M4 -Os, newlib-nano, `--gc-sections`, GCC 16.2 - Codec2-mod
+measured 23.8 KiB for 3200 on an older toolchain, so compare deltas,
+not absolutes):
+
+| Image      | text (flash) |
+|------------|--------------|
+| 3200 only  | 30,596 B     |
+| 1600 only  | 30,956 B     |
+| 1300 only  | 31,004 B     |
+| all modes  | 33,532 B     |
+
+A single additional mode costs about 0.4 KiB (it reuses the entire
+analysis/synthesis pipeline); shipping all three costs about 2.9 KiB
+over 3200-only (encode/decode frame logic plus the scalar-LSP
+quantiser and codebooks used by 1600/1300).
+
+Worst-case stack (deepest call path from `-fstack-usage` frames):
+
+| Entry point          | stack |
+|----------------------|-------|
+| encode, any mode     | ~0.9 KiB |
+| decode 3200          | 4.97 KiB |
+| decode 1600 / 1300   | 5.81 KiB |
+
+The 1600/1300 decoders use ~0.85 KiB more stack than 3200 (4x10 ms
+model/LSP/Aw interpolation arrays instead of 2x).
 
 ## Important notice: derivative work
 
