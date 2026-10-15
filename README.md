@@ -11,23 +11,27 @@ LGPL 2.1 - see LICENSE.
 |------|--------|------|-----------------------------------|
 | 3200 | 20 ms  | 64   | bit-exact with reference Codec2   |
 | 1600 | 40 ms  | 64   | bit-exact with reference Codec2   |
+| 1300 | 40 ms  | 52   | bit-exact with reference Codec2   |
 
-The 1600 bps mode was added in this fork using the same optimised
-structure as the 3200 mode: static, fixed-size state (no heap), split
-encoder/decoder states, KISS FFT, and the same 10 ms internal analysis
-pipeline.  The 1600 encoder packs 4 voicing bits (10 ms update), two
-Wo + energy pairs (20 ms update) and one scalar-LSP vector (40 ms
-update); the decoder interpolates the three in-between 10 ms frames.
+The 1600 and 1300 bps modes were added in this fork using the same
+optimised structure as the 3200 mode: static, fixed-size state (no
+heap), split encoder/decoder states, KISS FFT, and the same 10 ms
+internal analysis pipeline.  The 1600 encoder packs 4 voicing bits
+(10 ms update), two Wo + energy pairs (20 ms update) and one
+scalar-LSP vector (40 ms update).  The 1300 encoder samples Wo,
+energy and scalar LSPs once per 40 ms frame; the decoder interpolates
+the three in-between 10 ms frames in both modes.
 
-Encoder bit-exactness for both modes has been verified byte-for-byte
-against `c2enc` from codec2 1.2 on `hts1a` (150 x 20 ms frames of 3200,
-75 x 40 ms frames of 1600).
+Encoder bit-exactness for all three modes has been verified
+byte-for-byte against `c2enc` from codec2 1.2 on `hts1a` (150 x 20 ms
+frames of 3200, 75 x 40 ms frames of 1600 and 1300).
 Decoded audio is not required to be sample-identical to the reference
 implementation; waveform correlation with `c2dec` output of the same
 bitstream is 0.9998 (3200) and 0.88 waveform / 0.98 short-time envelope
-(1600).  The residual differences come from the restructured decoder
-DSP and float rounding in the interpolation path - the same class of
-difference the upstream Codec2-mod already documents for 3200.
+(1600) and 0.95 envelope (1300).  The residual differences come from the
+restructured decoder DSP and float rounding in the interpolation path -
+the same class of difference the upstream Codec2-mod already documents
+for 3200.
 
 Like upstream, bit-exactness of the encoded bitstream depends on the
 accuracy of the C library's `cosf()` during analysis (glibc: identical;
@@ -39,7 +43,7 @@ A single, small, embedded-friendly vocoder suite for VHF digital voice:
 
 - [x] M17 full rate (3200)
 - [x] M17 half rate (1600)
-- [ ] Codec2 1300 (later)
+- [x] Codec2 1300
 - [ ] SLATE (KV4P-HT / host-side modem projects)
 - [ ] FreeDV 2400A (5 kHz 4FSK) and 2400B (2-tone FSK for FM channels)
 
@@ -66,6 +70,11 @@ codec2_vhf_decode_3200(&dec, speech_3200, bits);
 int16_t speech_1600[CODEC2_VHF_SAMPLES_PER_FRAME_1600]; /* 320 */
 codec2_vhf_encode_1600(&enc, bits, speech_1600);
 codec2_vhf_decode_1600(&dec, speech_1600, bits);
+
+int16_t speech_1300[CODEC2_VHF_SAMPLES_PER_FRAME_1300]; /* 320 */
+uint8_t bits1300[CODEC2_VHF_BYTES_PER_FRAME_1300];      /* 7   */
+codec2_vhf_encode_1300(&enc, bits1300, speech_1300);
+codec2_vhf_decode_1300(&dec, speech_1300, bits1300);
 ```
 
 ## Tools

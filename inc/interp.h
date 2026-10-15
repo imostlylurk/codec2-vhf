@@ -11,4 +11,9 @@ void interpolate_lsp(float *interp, const float *prev, const float *next);
 void interpolate_lsp_ver2(float *interp, const float *prev,
                           const float *next, float weight);
 
+/* 1300 bps mode: weighted Wo and energy interpolation, reference port */
+void interp_Wo2(model_t *interp, const model_t *prev, const model_t *next,
+                float weight);
+float interp_energy2(float prev_e, float next_e, float weight);
+
 #endif /* CODEC2_VHF_INTERP_H */

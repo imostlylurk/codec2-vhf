@@ -24,14 +24,16 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    int mode_1600;
+    int mode; /* codec2 enum: 0 = 3200, 2 = 1600, 4 = 1300 */
     if (strcmp(argv[1], "3200") == 0)
-        mode_1600 = 0;
+        mode = 0;
     else if (strcmp(argv[1], "1600") == 0)
-        mode_1600 = 1;
+        mode = 2;
+    else if (strcmp(argv[1], "1300") == 0)
+        mode = 4;
     else
     {
-        fprintf(stderr, "mode must be 3200 or 1600\n");
+        fprintf(stderr, "mode must be 3200, 1600 or 1300\n");
         return 1;
     }
 
@@ -49,12 +51,16 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    const int nsam = mode_1600 ? CODEC2_VHF_SAMPLES_PER_FRAME_1600
-                               : CODEC2_VHF_SAMPLES_PER_FRAME_3200;
+    const int nsam = mode == 4 ? CODEC2_VHF_SAMPLES_PER_FRAME_1300
+                  : mode == 2 ? CODEC2_VHF_SAMPLES_PER_FRAME_1600
+                              : CODEC2_VHF_SAMPLES_PER_FRAME_3200;
+    const int nbyte = mode == 4 ? CODEC2_VHF_BYTES_PER_FRAME_1300
+                    : CODEC2_VHF_BYTES_PER_FRAME;
 
-    /* codec2 file header: mode 0 = CODEC2_MODE_3200, 2 = CODEC2_MODE_1600 */
+    /* codec2 file header: mode 0 = CODEC2_MODE_3200, 2 = CODEC2_MODE_1600,
+       4 = CODEC2_MODE_1300 */
     uint8_t hdr[7] = {C2_MAGIC[0], C2_MAGIC[1], C2_MAGIC[2], 1, 2,
-                      (uint8_t)(mode_1600 ? 2 : 0), 0};
+                      (uint8_t)mode, 0};
     fwrite(hdr, 1, sizeof(hdr), fout);
 
     static codec2_encoder_t enc;
@@ -69,11 +75,13 @@ int main(int argc, char *argv[])
     {
         for (size_t i = n; i < (size_t)nsam; i++)
             speech[i] = 0; /* pad final partial frame with silence */
-        if (mode_1600)
+        if (mode == 4)
+            codec2_vhf_encode_1300(&enc, bits, speech);
+        else if (mode == 2)
             codec2_vhf_encode_1600(&enc, bits, speech);
         else
             codec2_vhf_encode_3200(&enc, bits, speech);
-        fwrite(bits, 1, sizeof(bits), fout);
+        fwrite(bits, 1, nbyte, fout);
         frames++;
     }
 

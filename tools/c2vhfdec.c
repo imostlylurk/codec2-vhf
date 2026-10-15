@@ -41,12 +41,12 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    int mode_1600;
+    int mode; /* codec2 enum: 0/2/4 */
     uint8_t hdr[7];
     if (fread(hdr, 1, sizeof(hdr), fin) == sizeof(hdr) &&
         memcmp(hdr, C2_MAGIC, 3) == 0)
     {
-        mode_1600 = (hdr[5] == 2);
+        mode = hdr[5];
         fprintf(stderr, "codec2 file header: v%d.%d mode %d\n",
                 hdr[3], hdr[4], hdr[5]);
     }
@@ -57,14 +57,21 @@ int main(int argc, char *argv[])
         {
             fprintf(stderr, "no header and no --mode given; defaulting "
                             "to 3200\n");
-            mode_1600 = 0;
+            mode = 0;
         }
+        else if (strcmp(mode_arg, "1600") == 0)
+            mode = 2;
+        else if (strcmp(mode_arg, "1300") == 0)
+            mode = 4;
         else
-            mode_1600 = (strcmp(mode_arg, "1600") == 0);
+            mode = 0;
     }
 
-    const int nsam = mode_1600 ? CODEC2_VHF_SAMPLES_PER_FRAME_1600
-                               : CODEC2_VHF_SAMPLES_PER_FRAME_3200;
+    const int nsam = mode == 4 ? CODEC2_VHF_SAMPLES_PER_FRAME_1300
+                  : mode == 2 ? CODEC2_VHF_SAMPLES_PER_FRAME_1600
+                              : CODEC2_VHF_SAMPLES_PER_FRAME_3200;
+    const int nbyte = mode == 4 ? CODEC2_VHF_BYTES_PER_FRAME_1300
+                    : CODEC2_VHF_BYTES_PER_FRAME;
 
     static codec2_decoder_t dec;
     codec2_vhf_decoder_init(&dec);
@@ -73,9 +80,11 @@ int main(int argc, char *argv[])
     int16_t speech[CODEC2_VHF_SAMPLES_PER_FRAME_1600];
     long frames = 0;
 
-    while (fread(bits, 1, sizeof(bits), fin) == sizeof(bits))
+    while (fread(bits, 1, nbyte, fin) == (size_t)nbyte)
     {
-        if (mode_1600)
+        if (mode == 4)
+            codec2_vhf_decode_1300(&dec, speech, bits);
+        else if (mode == 2)
             codec2_vhf_decode_1600(&dec, speech, bits);
         else
             codec2_vhf_decode_3200(&dec, speech, bits);

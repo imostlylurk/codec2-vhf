@@ -307,3 +307,141 @@ void codec2_vhf_decode_1600(codec2_decoder_t *c2, int16_t *speech, const uint8_t
 	for (int i = 0; i < LPC_ORD; i++)
 		c2->prev_lsps_dec[i] = lsps[3][i];
 }
+
+/*
+  Encodes 320 speech samples (40ms of speech) into 52 bits (1300 bps).
+
+  The codec2 algorithm operates internally on 10ms (80 sample)
+  frames, so we run the encoding algorithm 4 times:
+
+  frame 0: voicing bit
+  frame 1: voicing bit
+  frame 2: voicing bit
+  frame 3: voicing bit, Wo and E, scalar LSPs
+
+  Wo, energy and LSPs are all sampled every 40ms; the decoder
+  interpolates the three in-between 10ms frames.
+
+  The bit allocation is:
+
+    Parameter                      frame 2  frame 4   Total
+    -------------------------------------------------------
+    Harmonic magnitudes (LSPs)      0       36        36
+    Pitch (Wo)                      0        7         7
+    Energy                          0        5         5
+    Voicing (10ms update)           2        2         4
+    TOTAL                          2       50        52
+*/
+void codec2_vhf_encode_1300(codec2_encoder_t *c2, uint8_t *bits, const int16_t *speech)
+{
+	model_t model = {0};
+	float ak[LPC_ORD + 1];
+	float lsps[LPC_ORD];
+	float e;
+	int Wo_index, e_index;
+	int lsp_indexes[LSP_SCALAR_INDEXES];
+	unsigned int nbit = 0;
+
+	memset(bits, 0, CODEC2_VHF_BYTES_PER_FRAME_1300); // 52 bits
+
+	/* frame 1: - voicing -----------------------------------------*/
+
+	analyse_one_frame(c2, &model, speech);
+	pack(bits, &nbit, model.voiced, 1);
+
+	/* frame 2: - voicing -----------------------------------------*/
+
+	analyse_one_frame(c2, &model, &speech[N_SAMP]);
+	pack(bits, &nbit, model.voiced, 1);
+
+	/* frame 3: - voicing -----------------------------------------*/
+
+	analyse_one_frame(c2, &model, &speech[2 * N_SAMP]);
+	pack(bits, &nbit, model.voiced, 1);
+
+	/* frame 4: - voicing, scalar Wo & E, scalar LSPs -------------*/
+
+	analyse_one_frame(c2, &model, &speech[3 * N_SAMP]);
+	pack(bits, &nbit, model.voiced, 1);
+
+	Wo_index = encode_Wo(model.Wo, WO_BITS);
+	pack(bits, &nbit, Wo_index, WO_BITS);
+
+	speech_to_uq_lsps(c2, lsps, ak, &e, c2->Sn, c2->w);
+	e_index = encode_energy(e, E_BITS);
+	pack(bits, &nbit, e_index, E_BITS);
+
+	encode_lsps_scalar(lsp_indexes, lsps);
+	for (int i = 0; i < LSP_SCALAR_INDEXES; i++)
+	{
+		pack(bits, &nbit, lsp_indexes[i], lsp_bits(i));
+	}
+}
+
+/* Decodes frames of 52 bits into 320 samples (40ms) of speech. */
+void codec2_vhf_decode_1300(codec2_decoder_t *c2, int16_t *speech, const uint8_t *bits)
+{
+	model_t model[4] = {0};
+	int lsp_indexes[LSP_SCALAR_INDEXES];
+	float lsps[4][LPC_ORD];
+	int Wo_index, e_index;
+	float e[4];
+	float ak[4][LPC_ORD + 1];
+	complex_t Aw[FFT_ENC / 2 + 1]; /* real FFT output: bins 0..FFT_ENC/2 */
+	float A2[FFT_ENC / 2];
+	unsigned int nbit = 0;
+
+	/* unpack bits from channel ------------------------------------*/
+
+	/* this will partially fill the model params for the 4 x 10ms
+	   frames */
+
+	model[0].voiced = unpack(bits, &nbit, 1);
+	model[1].voiced = unpack(bits, &nbit, 1);
+	model[2].voiced = unpack(bits, &nbit, 1);
+	model[3].voiced = unpack(bits, &nbit, 1);
+
+	Wo_index = unpack(bits, &nbit, WO_BITS);
+	model[3].Wo = decode_Wo(Wo_index, WO_BITS);
+	model[3].L = M_PI / model[3].Wo;
+
+	e_index = unpack(bits, &nbit, E_BITS);
+	e[3] = decode_energy(e_index, E_BITS);
+
+	for (int i = 0; i < LSP_SCALAR_INDEXES; i++)
+	{
+		lsp_indexes[i] = unpack(bits, &nbit, lsp_bits(i));
+	}
+	decode_lsps_scalar(&lsps[3][0], lsp_indexes);
+	check_lsp_order(&lsps[3][0]);
+	bw_expand_lsps(&lsps[3][0], 50.0f, 100.0f);
+
+	/* interpolate ------------------------------------------------*/
+
+	/* Wo, energy, and LSPs are sampled every 40ms so we interpolate
+	   the 3 frames in between */
+
+	for (int i = 0, weight = 0.25; i < 3; i++, weight += 0.25)
+	{
+		interpolate_lsp_ver2(&lsps[i][0], c2->prev_lsps_dec, &lsps[3][0], weight);
+		interp_Wo2(&model[i], &c2->prev_model_dec, &model[3], weight);
+		e[i] = interp_energy2(c2->prev_e_dec, e[3], weight);
+	}
+
+	/* then recover spectral amplitudes */
+
+	for (int i = 0; i < 4; i++)
+	{
+		lsp_to_lpc(&lsps[i][0], &ak[i][0]);
+		aks_to_mag2(c2, &ak[i][0], &model[i], e[i], Aw, A2);
+		apply_lpc_correction(&model[i]);
+		synthesise_one_frame(c2, &speech[N_SAMP * i], &model[i], Aw, 1.0f);
+	}
+
+	/* update memories for next frame ----------------------------*/
+
+	c2->prev_model_dec = model[3];
+	c2->prev_e_dec = e[3];
+	for (int i = 0; i < LPC_ORD; i++)
+		c2->prev_lsps_dec[i] = lsps[3][i];
+}

@@ -25,9 +25,11 @@ extern "C"
     typedef struct codec2_decoder_t codec2_decoder_t;
 
 /* public frame sizes */
-#define CODEC2_VHF_BYTES_PER_FRAME BYTES_PER_FRAME
+#define CODEC2_VHF_BYTES_PER_FRAME BYTES_PER_FRAME        /* 8: 3200/1600 */
+#define CODEC2_VHF_BYTES_PER_FRAME_1300 7                 /* 52 bits */
 #define CODEC2_VHF_SAMPLES_PER_FRAME_3200 (2 * N_SAMP)  /* 160, 20 ms */
 #define CODEC2_VHF_SAMPLES_PER_FRAME_1600 (4 * N_SAMP)  /* 320, 40 ms */
+#define CODEC2_VHF_SAMPLES_PER_FRAME_1300 (4 * N_SAMP)  /* 320, 40 ms */
 
 /* full codec (encoder + decoder in one state) */
     void codec2_vhf_init(codec2_t *c2);
@@ -54,6 +56,17 @@ extern "C"
         const int16_t *speech);
 
     void codec2_vhf_decode_1600(
+        codec2_decoder_t *c2,
+        int16_t *speech,
+        const uint8_t *bits);
+
+/* 1300 bps: 320 samples in/out, 7 byte frames (52 bits) */
+    void codec2_vhf_encode_1300(
+        codec2_encoder_t *c2,
+        uint8_t *bits,
+        const int16_t *speech);
+
+    void codec2_vhf_decode_1300(
         codec2_decoder_t *c2,
         int16_t *speech,
         const uint8_t *bits);
