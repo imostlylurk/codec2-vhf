@@ -33,5 +33,9 @@ add_executable(c2vhftest tests/c2vhftest.c)
 target_link_libraries(c2vhftest PRIVATE c2vhf m)
 target_compile_options(c2vhftest PRIVATE -O3 -ffp-contract=off)
 
+add_executable(bench tests/bench.c)
+target_link_libraries(bench PRIVATE c2vhf m pthread)
+target_compile_options(bench PRIVATE -O3 -ffp-contract=off)
+
 enable_testing()
 add_test(NAME c2vhftest COMMAND c2vhftest)
