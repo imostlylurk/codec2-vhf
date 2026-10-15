@@ -1,5 +1,5 @@
-#ifndef CODEC2_MOD_SYNTHESIS_H
-#define CODEC2_MOD_SYNTHESIS_H
+#ifndef CODEC2_VHF_SYNTHESIS_H
+#define CODEC2_VHF_SYNTHESIS_H
 
 #include <stdint.h>
 #include "codec2_internal.h"
@@ -14,4 +14,4 @@ void synthesise_one_frame(
 
 void synthesis_init(codec2_decoder_t *c2);
 
-#endif /* CODEC2_MOD_SYNTHESIS_H */
+#endif /* CODEC2_VHF_SYNTHESIS_H */

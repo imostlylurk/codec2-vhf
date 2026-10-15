@@ -1,5 +1,5 @@
-#ifndef CODEC2_MOD_NLP_H
-#define CODEC2_MOD_NLP_H
+#ifndef CODEC2_VHF_NLP_H
+#define CODEC2_VHF_NLP_H
 
 #include "codec2_internal.h"
 
@@ -12,4 +12,4 @@ float nlp(
 
 void nlp_init(nlp_t *nlp);
 
-#endif /* CODEC2_MOD_NLP_H */
+#endif /* CODEC2_VHF_NLP_H */

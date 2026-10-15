@@ -1,5 +1,5 @@
-#ifndef CODEC2_MOD_UTIL_H
-#define CODEC2_MOD_UTIL_H
+#ifndef CODEC2_VHF_UTIL_H
+#define CODEC2_VHF_UTIL_H
 
 #include <stdint.h>
 #include <math.h>
@@ -52,4 +52,4 @@ static inline float fast_powf_pos(float x, float y)
 	return v.f;
 }
 
-#endif /* CODEC2_MOD_UTIL_H */
+#endif /* CODEC2_VHF_UTIL_H */

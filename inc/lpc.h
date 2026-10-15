@@ -1,5 +1,5 @@
-#ifndef CODEC2_MOD_LPC_H
-#define CODEC2_MOD_LPC_H
+#ifndef CODEC2_VHF_LPC_H
+#define CODEC2_VHF_LPC_H
 
 #include "codec2_internal.h"
 
@@ -25,4 +25,4 @@ void lsp_to_lpc(
 
 void apply_lpc_correction(model_t *model);
 
-#endif /* CODEC2_MOD_LPC_H */
+#endif /* CODEC2_VHF_LPC_H */

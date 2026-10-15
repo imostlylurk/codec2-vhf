@@ -49,3 +49,15 @@ void interpolate_lsp(
     for (int i = 0; i < LPC_ORD; i++)
         interp[i] = prev[i] + 0.5f * (next[i] - prev[i]); // simple average, disguised
 }
+
+/* Weighted interpolation of LSPs (1600 bps mode).  Reference port:
+   note the double-precision intermediate. */
+void interpolate_lsp_ver2(
+    float *restrict interp,
+    const float *restrict prev,
+    const float *restrict next,
+    float weight)
+{
+    for (int i = 0; i < LPC_ORD; i++)
+        interp[i] = (1.0 - weight) * prev[i] + weight * next[i];
+}

@@ -200,3 +200,96 @@ void decode_lspds_scalar(float *lsp_, const int *indexes)
 		lsp_[i] = k * (float)lsp_hz;
 	}
 }
+
+/* ------------------------------------------------------------------ */
+/* 1600 bps mode: scalar LSP quantisation, check/bw helpers.          */
+/*  Bit-exact port of the reference Codec2 implementation.            */
+/* ------------------------------------------------------------------ */
+
+int lsp_bits(int i)
+{
+	return lsp_scalar_cb[i].log2m;
+}
+
+/* nearest-neighbour scalar quantiser (reference quantise(), k = 1) */
+static int quantise_scalar(const uint16_t *cb, float x, int m)
+{
+	int besti = 0;
+	float beste = 1E32f;
+
+	for (int j = 0; j < m; j++)
+	{
+		float diff = (float)cb[j] - x;
+		float e = diff * diff;
+
+		if (e < beste)
+		{
+			beste = e;
+			besti = j;
+		}
+	}
+
+	return besti;
+}
+
+void encode_lsps_scalar(int *indexes, const float *lsp)
+{
+	float lsp_hz[LPC_ORD];
+
+	/* convert from radians to Hz so we can use human readable
+	   frequencies */
+
+	for (int i = 0; i < LPC_ORD; i++)
+		lsp_hz[i] = (4000.0 / M_PI) * lsp[i];
+
+	/* scalar quantisers */
+
+	for (int i = 0; i < LPC_ORD; i++)
+		indexes[i] = quantise_scalar(lsp_scalar_cb[i].cb, lsp_hz[i],
+					     lsp_scalar_cb[i].m);
+}
+
+void decode_lsps_scalar(float *lsp_, const int *indexes)
+{
+	float lsp_hz[LPC_ORD];
+
+	for (int i = 0; i < LPC_ORD; i++)
+		lsp_hz[i] = (float)lsp_scalar_cb[i].cb[indexes[i]];
+
+	/* convert back to radians */
+
+	for (int i = 0; i < LPC_ORD; i++)
+		lsp_[i] = (M_PI / 4000.0) * lsp_hz[i];
+}
+
+void check_lsp_order(float *lsp)
+{
+	for (int i = 1; i < LPC_ORD; i++)
+		if (lsp[i] < lsp[i - 1])
+		{
+			float tmp = lsp[i - 1];
+
+			lsp[i - 1] = lsp[i] - 0.1f;
+			lsp[i] = tmp + 0.1f;
+			i = 1; /* start check again, as swap may have caused out of order */
+		}
+}
+
+void bw_expand_lsps(float *lsp, float min_sep_low, float min_sep_high)
+{
+	for (int i = 1; i < 4; i++)
+	{
+		if ((lsp[i] - lsp[i - 1]) < min_sep_low * (M_PI / 4000.0))
+			lsp[i] = lsp[i - 1] + min_sep_low * (M_PI / 4000.0);
+	}
+
+	/* As quantiser gaps increased, larger BW expansion was required
+	   to prevent twinkly noises.  This may need more experiment for
+	   different quantisers. */
+
+	for (int i = 4; i < LPC_ORD; i++)
+	{
+		if (lsp[i] - lsp[i - 1] < min_sep_high * (M_PI / 4000.0))
+			lsp[i] = lsp[i - 1] + min_sep_high * (M_PI / 4000.0);
+	}
+}
