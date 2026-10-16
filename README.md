@@ -187,15 +187,25 @@ instructions (~10k per 40 ms frame, ~83 us at 120 MHz, i.e. +0.2 %
 CPU load) - measured by valgrind instruction counts on identical
 workloads before/after.
 
-STM32F4 projection at 120 MHz (anchored on Codec2-mod's measured
-STM32F411 at 100 MHz, -Os: 3200 enc 5.32 ms + dec 7.14 ms per 20 ms
-frame = 62.3 % full-duplex load, worst-case frame 15.2 ms): scaled to
-120 MHz that is ~52 % full-duplex CPU load.  Instruction counts show
-the per-second decode cost is flat across modes (330k Ir per 20 ms
-equivalent for all three), so 1600 and 1300 land at the same ~52 %
-(+- the 0.2 % fix cost).  Worst-case frames still fit real time at
-120 MHz with ~2x margin.  These are projections from measurement
-ratios, not hardware runs.
+STM32F4 projection at 100 MHz, on Codec2-mod's measurement basis
+(their measured STM32F411 @ 100 MHz, -Os: 3200 enc 5.32/5.96 ms and
+dec 7.14/9.26 ms avg/max per 20 ms frame; our per-mode costs scaled by
+measured host-timing and instruction-count ratios vs 3200, decoder
+figures including the +1.5 % weight-fix penalty):
+
+| Mode | Frame  | enc avg/max | dec avg/max | full-duplex | worst frame |
+|------|--------|-------------|-------------|-------------|-------------|
+| 3200 | 20 ms  | 5.3 / 6.0 ms | 7.1 / 9.3 ms | 62 % | 76 % |
+| 1600 | 40 ms  | 10.4 / 11.7 ms | 14.5 / 18.8 ms | 62 % | 76 % |
+| 1300 | 40 ms  | 9.6 / 10.7 ms | 14.5 / 18.8 ms | 60 % | 74 % |
+
+Per-second cost is flat across modes (the 10 ms analysis pipeline
+dominates; instruction counts show ~330k Ir per 20 ms equivalent for
+all three), so full-duplex load is mode-independent; 1300 comes out
+slightly ahead because its encoder runs one fewer LPC pass.  At
+120 MHz scale by 100/120 (e.g. ~52 % / ~50 %).  Worst-case frames
+keep ~1.3x real-time margin at 100 MHz.  These are projections from
+measurement ratios, not hardware runs.
 
 ## Important notice: derivative work
 
