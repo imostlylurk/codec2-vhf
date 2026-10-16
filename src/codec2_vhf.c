@@ -1,5 +1,7 @@
+#ifdef C2VHF_DUMP_HOOKS
 #include <stdio.h>
 #include <stdlib.h>
+#endif
 #include "codec2_vhf.h"
 #include "codec2_internal.h"
 #include "analysis.h"
@@ -294,6 +296,7 @@ void codec2_vhf_decode_1600(codec2_decoder_t *c2, int16_t *speech, const uint8_t
 		float weight = 0.25f * (i + 1); /* 0.25, 0.5, 0.75 exactly */
 		interpolate_lsp_ver2(&lsps[i][0], c2->prev_lsps_dec, &lsps[3][0], weight);
 	}
+	#ifdef C2VHF_DUMP_HOOKS
 	if (getenv("C2VHF_DUMP")) {
 		for (int i = 0; i < 4; i++)
 			fprintf(stderr, "SF1600 %d v%d Wo %.9g e %.9g L %d l0 %.9g l1 %.9g l2 %.9g l3 %.9g l4 %.9g l5 %.9g l6 %.9g l7 %.9g l8 %.9g l9 %.9g\n",
@@ -301,6 +304,7 @@ void codec2_vhf_decode_1600(codec2_decoder_t *c2, int16_t *speech, const uint8_t
 				lsps[i][0], lsps[i][1], lsps[i][2], lsps[i][3], lsps[i][4],
 				lsps[i][5], lsps[i][6], lsps[i][7], lsps[i][8], lsps[i][9]);
 	}
+	#endif
 
 	for (int i = 0; i < 4; i++)
 	{
@@ -438,6 +442,7 @@ void codec2_vhf_decode_1300(codec2_decoder_t *c2, int16_t *speech, const uint8_t
 		interp_Wo2(&model[i], &c2->prev_model_dec, &model[3], weight);
 		e[i] = interp_energy2(c2->prev_e_dec, e[3], weight);
 	}
+	#ifdef C2VHF_DUMP_HOOKS
 	if (getenv("C2VHF_DUMP")) {
 		for (int i = 0; i < 4; i++)
 			fprintf(stderr, "SF1300 %d v%d Wo %.9g e %.9g L %d l0 %.9g l1 %.9g l2 %.9g l3 %.9g l4 %.9g l5 %.9g l6 %.9g l7 %.9g l8 %.9g l9 %.9g\n",
@@ -445,6 +450,7 @@ void codec2_vhf_decode_1300(codec2_decoder_t *c2, int16_t *speech, const uint8_t
 				lsps[i][0], lsps[i][1], lsps[i][2], lsps[i][3], lsps[i][4],
 				lsps[i][5], lsps[i][6], lsps[i][7], lsps[i][8], lsps[i][9]);
 	}
+	#endif
 
 	/* then recover spectral amplitudes */
 

@@ -3,6 +3,10 @@ project(codec2-vhf C)
 
 set(CMAKE_C_STANDARD 11)
 
+# debug hooks: per-sub-frame parameter dumps (C2VHF_DUMP=1 at runtime);
+# costs ~2 KiB flash via printf machinery, so off by default
+option(C2VHF_DUMP_HOOKS "build decoder parameter-dump hooks" OFF)
+
 add_library(c2vhf STATIC
     src/analysis.c
     src/codec2_vhf.c
@@ -18,6 +22,9 @@ add_library(c2vhf STATIC
     src/util.c
 )
 target_include_directories(c2vhf PUBLIC inc)
+if(C2VHF_DUMP_HOOKS)
+    target_compile_definitions(c2vhf PRIVATE C2VHF_DUMP_HOOKS)
+endif()
 # keep float math reproducible for bit-exactness on FMA-capable targets.
 # NOTE: do not add -Wfloat-conversion: the codebase deliberately keeps
 # double-precision intermediates from the reference implementation and

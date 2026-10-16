@@ -159,9 +159,9 @@ not absolutes):
 | Image      | text (flash) |
 |------------|--------------|
 | 3200 only  | 30,596 B     |
-| 1600 only  | 30,956 B     |
-| 1300 only  | 31,004 B     |
-| all modes  | 33,532 B     |
+| 1600 only  | 30,980 B     |
+| 1300 only  | 31,036 B     |
+| all modes  | 33,588 B     |
 
 A single additional mode costs about 0.4 KiB (it reuses the entire
 analysis/synthesis pipeline); shipping all three costs about 2.9 KiB
@@ -172,12 +172,30 @@ Worst-case stack (deepest call path from `-fstack-usage` frames):
 
 | Entry point          | stack |
 |----------------------|-------|
-| encode, any mode     | ~0.9 KiB |
+| encode, any mode     | ~1.0 KiB |
 | decode 3200          | 4.97 KiB |
-| decode 1600 / 1300   | 5.81 KiB |
+| decode 1600          | 5.81 KiB |
+| decode 1300          | 5.82 KiB |
+
 
 The 1600/1300 decoders use ~0.85 KiB more stack than 3200 (4x10 ms
 model/LSP/Aw interpolation arrays instead of 2x).
+
+Cost of the interpolation-weight precision fix (float instead of the
+truncating int): +24..56 B flash, 0 B stack, and +1.5 % decoder
+instructions (~10k per 40 ms frame, ~83 us at 120 MHz, i.e. +0.2 %
+CPU load) - measured by valgrind instruction counts on identical
+workloads before/after.
+
+STM32F4 projection at 120 MHz (anchored on Codec2-mod's measured
+STM32F411 at 100 MHz, -Os: 3200 enc 5.32 ms + dec 7.14 ms per 20 ms
+frame = 62.3 % full-duplex load, worst-case frame 15.2 ms): scaled to
+120 MHz that is ~52 % full-duplex CPU load.  Instruction counts show
+the per-second decode cost is flat across modes (330k Ir per 20 ms
+equivalent for all three), so 1600 and 1300 land at the same ~52 %
+(+- the 0.2 % fix cost).  Worst-case frames still fit real time at
+120 MHz with ~2x margin.  These are projections from measurement
+ratios, not hardware runs.
 
 ## Important notice: derivative work
 
