@@ -13,26 +13,48 @@ LGPL 2.1 - see LICENSE.
 | 1600 | 40 ms  | 64   | bit-exact with reference Codec2   |
 | 1300 | 40 ms  | 52   | bit-exact with reference Codec2   |
 
-The 1600 and 1300 bps modes were added in this fork using the same
-optimised structure as the 3200 mode: static, fixed-size state (no
-heap), split encoder/decoder states, KISS FFT, and the same 10 ms
-internal analysis pipeline.  The 1600 encoder packs 4 voicing bits
-(10 ms update), two Wo + energy pairs (20 ms update) and one
-scalar-LSP vector (40 ms update).  The 1300 encoder samples Wo,
-energy and scalar LSPs once per 40 ms frame; the decoder interpolates
-the three in-between 10 ms frames in both modes.
+## What changed relative to Codec2-mod
 
-Encoder bit-exactness for all three modes has been verified
-byte-for-byte against `c2enc` from codec2 1.2 on `hts1a` (150 x 20 ms
-frames of 3200, 75 x 40 ms frames of 1600 and 1300).
-Decoded audio is not sample-identical to the reference implementation,
-but after the 1600/1300 interpolation-weight fix (see git history) the
-decoder parameter streams (Wo, energy, LSPs, voicing per 10 ms
-sub-frame) match the reference decoder exactly on real speech, and
-waveform correlation with `c2dec` output of the same bitstream is
-0.996+ with short-time envelope correlation 1.0000 for all three modes
-(measured on a 28 s speech sample).  The residual difference is float
-rounding in the restructured decoder DSP.
+- **1600 and 1300 bps modes added**, using the same optimised
+  structure as the 3200 mode: static, fixed-size state (no heap),
+  split encoder/decoder states, KISS FFT, and the same 10 ms internal
+  analysis pipeline.  The 1600 encoder packs 4 voicing bits (10 ms
+  update), two Wo + energy pairs (20 ms update) and one scalar-LSP
+  vector (40 ms update).  The 1300 encoder samples Wo, energy and
+  scalar LSPs once per 40 ms frame.  Both decoders interpolate the
+  in-between 10 ms sub-frames.  These modes are bit-exact ports of the
+  reference Codec2 framing and scalar-LSP quantiser onto the
+  Codec2-mod structure.
+- **API renamed** `codec2_*` -> `codec2_vhf_*` with explicit per-mode
+  entry points (`codec2_vhf_encode_3200/1600/1300`, ...), avoiding
+  symbol collisions when linking alongside reference libcodec2.
+- **Build and tooling**: CMake build, `c2vhfenc`/`c2vhfdec` file tools,
+  in-process test suite, host benchmark, and Cortex-M4 static
+  footprint analysis.
+- **`.c2` file interop**: the tools write and honour the standard
+  codec2 file header, so encoded files interoperate with stock
+  `c2enc`/`c2dec`/`c2play`.
+- `-ffp-contract=off` pinned for reproducible float math on
+  FMA-capable targets.
+- Optional `C2VHF_DUMP_HOOKS` build with per-sub-frame decoder
+  parameter dumps for differential testing against the reference
+  decoder (off by default, ~2 KiB flash).
+
+Everything else - the analysis pipeline, synthesis, NLP, quantisers
+and the no-heap static-state design - is Codec2-mod's, unchanged.
+
+## Conformance
+
+Encoder output is bit-exact with reference Codec2 1.2, verified
+byte-for-byte against `c2enc` on `hts1a` (150 x 20 ms frames of 3200,
+75 x 40 ms frames of 1600 and 1300) and on longer speech material.
+On the decoder side, the reconstructed parameter streams (Wo, energy,
+LSPs, voicing per 10 ms sub-frame) match the reference decoder
+exactly, and waveform correlation with `c2dec` output of the same
+bitstream is 0.996+ with short-time envelope correlation 1.0000 for
+all three modes (28 s speech sample).  Decoded audio is not
+sample-identical to the reference implementation; the residual
+difference is float rounding in the restructured decoder DSP.
 
 Like upstream, bit-exactness of the encoded bitstream depends on the
 accuracy of the C library's `cosf()` during analysis (glibc: identical;
@@ -94,7 +116,7 @@ cmake -B build && cmake --build build
 cd build && ctest
 ```
 
-`c2vhftest` runs an in-process full-chain test of both modes
+`c2vhftest` runs an in-process full-chain test of all modes
 (synthesis, encode, decode, voiced/silence energy checks).  A
 bit-exactness check against stock `c2enc` (if installed):
 
@@ -103,18 +125,6 @@ bit-exactness check against stock `c2enc` (if installed):
 c2enc 3200 testdata/hts1a.raw /tmp/b.c2
 cmp <(tail -c +8 /tmp/a.c2) <(tail -c +8 /tmp/b.c2) && echo bit-exact
 ```
-
-## Performance
-
-This codebase keeps all of Codec2-mod's optimisations: no runtime
-`malloc`/`free`, fully deterministic fixed-size state, single-mode
-linking, much smaller flash footprint and encoder stack than reference
-Codec2.  Upstream Codec2-mod STM32F411 measurements for the 3200 mode
-(git history of this file): 2.7x faster encode / 2.1x decode at 23.8
-KiB flash vs 167.2 KiB reference; 19.6 KiB static encoder state,
-16.2 KiB decoder state, ~1 KiB encode stack.  The 1600 mode adds two
-extra 10 ms analyses and one scalar-LSP search per 40 ms frame and
-stays comfortably real time on the same class of hardware.
 
 ## Benchmarks
 
@@ -129,15 +139,15 @@ Host timing (x86-64, hts1a, 30 passes, avg per frame):
 
 | Task  | ref 3200 | vhf 3200 | ref 1600 | vhf 1600 | ref 1300 | vhf 1300 |
 |-------|----------|----------|----------|----------|----------|----------|
-| encode| 34.6 us  | **16.9** | 74.4 us  | **33.0** | 61.9 us  | **29.7** |
-| decode| 20.9 us  | 21.5     | 45.8 us  | **42.4** | 42.2 us  | 42.5     |
+| encode| 34.6 us  | **17.1** | 74.4 us  | **33.5** | 61.9 us  | **30.7** |
+| decode| 20.9 us  | 22.1     | 45.8 us  | **43.8** | 42.2 us  | 44.9     |
 
 The encoder runs ~2x faster than reference in every mode (matching the
 2.7x Codec2-mod measured on STM32); on the host the decoder advantage
 of the mod mostly disappears.  Notably, per second of audio every mode
-costs about the same to encode (~0.85 us/ms): the 10 ms analysis
-pipeline dominates, and the longer frames of 1600/1300 exactly
-compensate for their extra analyses.
+costs about the same to encode: the 10 ms analysis pipeline dominates,
+and the longer frames of 1600/1300 exactly compensate for their extra
+analyses.
 
 RAM (static, caller-owned; identical for all three modes since the
 analysis/synthesis state is shared):
@@ -177,21 +187,13 @@ Worst-case stack (deepest call path from `-fstack-usage` frames):
 | decode 1600          | 5.81 KiB |
 | decode 1300          | 5.82 KiB |
 
-
 The 1600/1300 decoders use ~0.85 KiB more stack than 3200 (4x10 ms
 model/LSP/Aw interpolation arrays instead of 2x).
 
-Cost of the interpolation-weight precision fix (float instead of the
-truncating int): +24..56 B flash, 0 B stack, and +1.5 % decoder
-instructions (~10k per 40 ms frame, ~83 us at 120 MHz, i.e. +0.2 %
-CPU load) - measured by valgrind instruction counts on identical
-workloads before/after.
-
 STM32F4 projection at 100 MHz, on Codec2-mod's measurement basis
 (their measured STM32F411 @ 100 MHz, -Os: 3200 enc 5.32/5.96 ms and
-dec 7.14/9.26 ms avg/max per 20 ms frame; our per-mode costs scaled by
-measured host-timing and instruction-count ratios vs 3200, decoder
-figures including the +1.5 % weight-fix penalty):
+dec 7.14/9.26 ms avg/max per 20 ms frame; our per-mode costs scaled
+by measured host-timing and instruction-count ratios vs 3200):
 
 | Mode | Frame  | enc avg/max | dec avg/max | full-duplex | worst frame |
 |------|--------|-------------|-------------|-------------|-------------|
@@ -218,8 +220,8 @@ recognizably derived from it.  All original credit for the Codec2
 design, algorithms, and implementation belongs to David Rowe and the
 Codec2 contributors; the minimal optimised 3200 extraction this
 project builds on comes from the M17-Project's Codec2-mod.  The 1600
-bps mode is a bit-exact port of the reference Codec2 scalar LSP
-quantiser and 40 ms framing onto the Codec2-mod structure.
+and 1300 bps modes are bit-exact ports of the reference Codec2
+framing and scalar-LSP quantiser onto the Codec2-mod structure.
 
 ## License
 
