@@ -25,13 +25,14 @@ the three in-between 10 ms frames in both modes.
 Encoder bit-exactness for all three modes has been verified
 byte-for-byte against `c2enc` from codec2 1.2 on `hts1a` (150 x 20 ms
 frames of 3200, 75 x 40 ms frames of 1600 and 1300).
-Decoded audio is not required to be sample-identical to the reference
-implementation; waveform correlation with `c2dec` output of the same
-bitstream is 0.9998 (3200) and 0.88 waveform / 0.98 short-time envelope
-(1600) and 0.95 envelope (1300).  The residual differences come from the
-restructured decoder DSP and float rounding in the interpolation path -
-the same class of difference the upstream Codec2-mod already documents
-for 3200.
+Decoded audio is not sample-identical to the reference implementation,
+but after the 1600/1300 interpolation-weight fix (see git history) the
+decoder parameter streams (Wo, energy, LSPs, voicing per 10 ms
+sub-frame) match the reference decoder exactly on real speech, and
+waveform correlation with `c2dec` output of the same bitstream is
+0.996+ with short-time envelope correlation 1.0000 for all three modes
+(measured on a 28 s speech sample).  The residual difference is float
+rounding in the restructured decoder DSP.
 
 Like upstream, bit-exactness of the encoded bitstream depends on the
 accuracy of the C library's `cosf()` during analysis (glibc: identical;

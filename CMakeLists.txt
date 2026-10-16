@@ -18,7 +18,10 @@ add_library(c2vhf STATIC
     src/util.c
 )
 target_include_directories(c2vhf PUBLIC inc)
-# keep float math reproducible for bit-exactness on FMA-capable targets
+# keep float math reproducible for bit-exactness on FMA-capable targets.
+# NOTE: do not add -Wfloat-conversion: the codebase deliberately keeps
+# double-precision intermediates from the reference implementation and
+# "fixing" those warnings would break bit-exactness.
 target_compile_options(c2vhf PRIVATE -O3 -ffp-contract=off -Wall -Wextra)
 
 # c2vhfenc / c2vhfdec: raw 8 kHz mono s16 <-> .c2 file (with the stock

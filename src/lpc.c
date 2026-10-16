@@ -1,3 +1,5 @@
+#include <stdio.h>
+#include <stdlib.h>
 #include "codec2_internal.h"
 #include "util.h"
 #include "lpc.h"
@@ -346,6 +348,12 @@ void aks_to_mag2(codec2_decoder_t *c2,
             Em += Pw[i];
 
         model->A[m] = sqrtf(Em * gain);
+    }
+    if (getenv("C2VHF_DUMP")) {
+        float s2 = 0; for (int m = 1; m <= model->L; m++) s2 += model->A[m]*model->A[m];
+        fprintf(stderr, "AKS L %d v%d Wo %.6g E %.6g sumA2 %.6g maxA %.6g\n",
+                model->L, model->voiced, model->Wo, E, s2,
+                ({float mx=0; for(int m=1;m<=model->L;m++) if(model->A[m]>mx) mx=model->A[m]; mx;}));
     }
 }
 
