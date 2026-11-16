@@ -18,7 +18,7 @@ OBJDUMP=arm-none-eabi-objdump
 CFLAGS="-Os -mcpu=cortex-m4 -mthumb -ffunction-sections -fdata-sections -fstack-usage -specs=nano.specs -Iinc -Ibuild-size"
 mkdir -p $OUT
 
-SRCS="src/analysis.c src/codec2_vhf.c src/delta_lsp_cb.c src/interp.c src/kiss_fft.c src/kiss_fftr.c src/lpc.c src/lsp_scalar_cb.c src/nlp.c src/quantise.c src/synthesis.c src/util.c"
+SRCS="src/analysis.c src/codec2_vhf.c src/delta_lsp_cb.c src/fft_fixed.c src/fp_math.c src/interp.c src/lpc.c src/lsp_scalar_cb.c src/nlp.c src/quantise.c src/synthesis.c src/util.c"
 
 compile_lib() {
     mkdir -p $OUT
