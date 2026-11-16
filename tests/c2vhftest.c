@@ -7,7 +7,6 @@
  * 4. Checks the packed bit count is exactly 64 per frame (nbit).
  */
 
-#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -18,42 +17,80 @@
 
 static int16_t sig[N_FRAMES * 320];
 
+/* integer sine: quarter-wave table from the codec's fp_math */
+static int32_t isin(uint32_t phase) /* 2^32 == 2*pi */
+{
+    extern int32_t fp_sin_q31(uint32_t phase);
+    return fp_sin_q31(phase) >> 16; /* Q15 */
+}
+
 static void gen_signal(void)
 {
     int n = 0;
+    /* phase increments: f * 2^32 / 8000 */
+    const uint32_t inc180 = (uint32_t)(180.0 * 4294967296.0 / 8000.0);
+    const uint32_t inc3 = (uint32_t)(3.0 * 4294967296.0 / 8000.0);
+    const uint32_t inc120 = (uint32_t)(120.0 * 4294967296.0 / 8000.0);
+    const uint32_t inc1600 = (uint32_t)(1600.0 * 4294967296.0 / 8000.0);
+
     for (int f = 0; f < N_FRAMES; f++)
     {
         /* pattern: voiced tone, voiced tone, noise, silence (per 40ms) */
         int seg = f % 4;
         for (int i = 0; i < 320; i++, n++)
         {
-            double t = (double)n / 8000.0;
-            float v = 0;
+            uint32_t ph1 = (uint32_t)((int64_t)n * inc180);
+            uint32_t ph2 = (uint32_t)((int64_t)n * inc3);
+            uint32_t ph3 = (uint32_t)((int64_t)n * inc120);
+            uint32_t ph4 = (uint32_t)((int64_t)n * inc1600);
+            int32_t v = 0;
             if (seg == 0)
-                v = 5000.f * sinf(2.f * (float)M_PI * 180.f * t) *
-                    (0.6f + 0.4f * sinf(2.f * (float)M_PI * 3.f * t));
+            {
+                /* 5000 * sin(180Hz) * (0.6 + 0.4*sin(3Hz)) */
+                int32_t am = 19661 + ((isin(ph2) * 26214) >> 15); /* 0.6+0.4sin, Q15 */
+                v = (isin(ph1) * 5000 / 32768) * am / 32768;
+            }
             else if (seg == 1)
-                v = 4000.f * sinf(2.f * (float)M_PI * 120.f * t) +
-                    1000.f * sinf(2.f * (float)M_PI * 1600.f * t);
+                v = (isin(ph3) * 4000) / 32768 + (isin(ph4) * 1000) / 32768;
             else if (seg == 2)
-                v = 1500.f * ((int)(((unsigned)n * 1103515245u + 12345u) >> 16) - 32768) /
-                    32768.f;
+                v = 1500 * ((int)(((unsigned)n * 1103515245u + 12345u) >> 16) - 32768) / 32768;
             /* seg == 3: silence */
-            if (v > 32767.f)
-                v = 32767.f;
-            if (v < -32768.f)
-                v = -32768.f;
+            if (v > 32767)
+                v = 32767;
+            if (v < -32768)
+                v = -32768;
             sig[n] = (int16_t)v;
         }
     }
 }
 
-static double rms(const int16_t *s, int n)
+static int isqrt64(uint64_t v)
 {
-    double acc = 0;
+    uint64_t res = 0, bit = 1ULL << 62;
+    while (bit > v)
+        bit >>= 2;
+    while (bit)
+    {
+        if (v >= res + bit)
+        {
+            v -= res + bit;
+            res = (res >> 1) + bit;
+        }
+        else
+        {
+            res >>= 1;
+        }
+        bit >>= 2;
+    }
+    return (int)res;
+}
+
+static int rms(const int16_t *s, int n)
+{
+    uint64_t acc = 0;
     for (int i = 0; i < n; i++)
-        acc += (double)s[i] * s[i];
-    return sqrt(acc / n);
+        acc += (uint64_t)s[i] * s[i];
+    return isqrt64(acc / n); /* integer rms */
 }
 
 static const char *mode_name(int mode) /* 0 = 3200, 1 = 1600, 2 = 1300 */
@@ -110,14 +147,14 @@ static int run_mode(int mode)
        bitstream), so for 1300 only check that the output is sane. */
     if (mode == 2)
     {
-        double overall = rms(out, N_FRAMES * 320);
+        int overall = rms(out, N_FRAMES * 320);
         int clipped = 0;
         for (int i = 0; i < N_FRAMES * 320; i++)
             if (out[i] == 32767 || out[i] == -32768)
                 clipped++;
         if (overall < 50.0 || overall > 15000.0)
         {
-            printf("  mode %s: FAIL overall rms %.1f out of range\n",
+            printf("  mode %s: FAIL overall rms %d out of range\n",
                    name, overall);
             fail = 1;
         }
@@ -126,7 +163,7 @@ static int run_mode(int mode)
             printf("  mode %s: FAIL %d clipped samples\n", name, clipped);
             fail = 1;
         }
-        printf("  mode %s: %d frames, overall rms %.1f, %d clipped %s\n",
+        printf("  mode %s: %d frames, overall rms %d, %d clipped %s\n",
                name, nframes, overall, clipped, fail ? "FAIL" : "PASS");
         return fail;
     }
@@ -135,7 +172,7 @@ static int run_mode(int mode)
        (pattern: voiced, voiced, noise, silence).  For silence blocks
        use the last 160 samples: the decoder's energy interpolation
        needs ~one 20 ms frame to decay after the previous segment. */
-    double voiced_acc = 0, silence_acc = 0;
+    int64_t voiced_acc = 0, silence_acc = 0;
     int voiced_n = 0, silence_n = 0;
     for (int f = 0; f < N_FRAMES; f++)
     {
@@ -151,18 +188,18 @@ static int run_mode(int mode)
             silence_n++;
         }
     }
-    double voiced_avg = voiced_acc / voiced_n;
-    double silence_avg = silence_acc / silence_n;
+    int voiced_avg = (int)(voiced_acc / voiced_n);
+    int silence_avg = (int)(silence_acc / silence_n);
 
     if (voiced_avg < 300.0)
     {
-        printf("  mode %s: FAIL voiced rms %.1f too low\n", name, voiced_avg);
+        printf("  mode %s: FAIL voiced rms %d too low\n", name, voiced_avg);
         fail = 1;
     }
     if (silence_avg > 0.5 * voiced_avg)
     {
-        printf("  mode %s: FAIL silence rms %.1f not below half of voiced "
-               "%.1f\n", name, silence_avg, voiced_avg);
+        printf("  mode %s: FAIL silence rms %d not below half of voiced "
+               "%d\n", name, silence_avg, voiced_avg);
         fail = 1;
     }
     if (nonzero_frames < nframes / 2)
@@ -172,7 +209,7 @@ static int run_mode(int mode)
         fail = 1;
     }
 
-    printf("  mode %s: %d frames, voiced rms %.1f, silence rms %.1f %s\n",
+    printf("  mode %s: %d frames, voiced rms %d, silence rms %d %s\n",
            name, nframes, voiced_avg, silence_avg, fail ? "FAIL" : "PASS");
     return fail;
 }

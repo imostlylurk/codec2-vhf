@@ -7,10 +7,9 @@
 void synthesise_one_frame(
     codec2_decoder_t *c2,
     int16_t *speech,
-    model_t *model,
-    const complex_t *Aw,
-    float gain
-);
+    model_t *model);
+/* Reads the A(z) spectrum (257 bins, Q24) that aks_to_mag2() left in
+   c2->fft_buffer[0..256]. */
 
 void synthesis_init(codec2_decoder_t *c2);
 

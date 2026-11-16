@@ -11,7 +11,6 @@
  */
 
 #include <inttypes.h>
-#include <math.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -28,11 +27,11 @@ static int n_frames;
 static int frame_samples;
 static int frame_bytes;
 
-static double now_us(void)
+static int64_t now_us(void)
 {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    return ts.tv_sec * 1e6 + ts.tv_nsec / 1e3;
+    return (int64_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
 }
 
 static void run_pass(int mode)
@@ -100,7 +99,7 @@ int main(int argc, char *argv[])
             n_frames = mode == 0 ? 150 : 75;
 
         /* init timing */
-        double t0 = now_us();
+        int64_t t0 = now_us();
         for (int r = 0; r < 100; r++)
         {
             static codec2_encoder_t e;
@@ -108,14 +107,14 @@ int main(int argc, char *argv[])
             codec2_vhf_encoder_init(&e);
             codec2_vhf_decoder_init(&d);
         }
-        double init_us = (now_us() - t0) / 100;
+        int64_t init_us = (now_us() - t0) / 100;
 
         static codec2_encoder_t enc;
         static codec2_decoder_t dec;
         codec2_vhf_encoder_init(&enc);
         codec2_vhf_decoder_init(&dec);
 
-        double enc_total = 0, dec_total = 0, enc_max = 0, dec_max = 0;
+        int64_t enc_total = 0, dec_total = 0, enc_max = 0, dec_max = 0;
         for (int p = 0; p < passes; p++)
         {
             for (int fr = 0; fr < n_frames; fr++)
@@ -128,7 +127,7 @@ int main(int argc, char *argv[])
                     codec2_vhf_encode_1600(&enc, bits, &speech[fr * 320]);
                 else
                     codec2_vhf_encode_1300(&enc, bits, &speech[fr * 320]);
-                double dt = now_us() - t0;
+                int64_t dt = now_us() - t0;
                 enc_total += dt;
                 if (dt > enc_max)
                     enc_max = dt;
@@ -147,8 +146,8 @@ int main(int argc, char *argv[])
             }
         }
         int count = n_frames * passes;
-        double enc_avg = enc_total / count;
-        double dec_avg = dec_total / count;
+        double enc_avg = (double)enc_total / count;
+        double dec_avg = (double)dec_total / count;
         double load = (enc_avg + dec_avg) / (ms[mode] * 1000.0) * 100.0;
 
         printf("mode %s (%d x %dms frames, %d B):\n"
@@ -157,7 +156,8 @@ int main(int argc, char *argv[])
                "  decode      %8.1f us avg  %8.1f us max\n"
                "  full-duplex CPU load %5.1f %%\n\n",
                names[mode], n_frames, ms[mode], frame_bytes,
-               init_us, enc_avg, enc_max, dec_avg, dec_max, load);
+               (double)init_us, enc_avg, (double)enc_max, dec_avg,
+               (double)dec_max, load);
     }
     (void)frame_bytes;
     return 0;

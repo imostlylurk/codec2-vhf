@@ -4,55 +4,54 @@
 /*
   This work uses code written by David Rowe VK5DGR et al.
   https://github.com/drowe67/codec2
+
+  Fixed-point internal state.  The library performs no floating point
+  arithmetic; every signal and parameter lives in an integer Q format:
+
+    speech samples        int16_t, Q0
+    analysis window w[]   Q28
+    windowed speech / FFT Q16 (Snw = Sn * w, max |Snw| ~ 142 for full
+                          scale speech; the unscaled 512-point FFT is
+                          safe because sum|Snw| <= 0.6007*32767*2^16
+                          < 2^31 for any input, worst case DC)
+    analysis window w[]   Q22
+    model amplitudes A[]  Q4 (speech units * 16), clamped to 2^20
+    Wo / angles           Q24 radians (see fp_math.h for phases)
+    LPC coefficients      Q24
+    energies              log2 domain, Q16 (Elog)
+    decoded energy        Q6 linear, derived from Elog once per frame
+    synthesised overlap   Q8
+    phases                uint32_t, 2^32 == 2*pi
 */
 
 #include <stdint.h>
-#include <math.h>
+#include <string.h>
 
-#include "kiss_fft.h"
-#include "kiss_fftr.h"
-
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
-
-#define TWO_PI (2.0f * M_PI)
-
-#ifndef POW10F
-#define POW10F(x) powf(10.0f, (x))
-#endif
+#include "fp_math.h"
+#include "fft_fixed.h"
 
 #define BYTES_PER_FRAME 8
 #define SAMPLES_PER_FRAME (2 * N_SAMP)
 
-#define N_S 0.01
 #define MAX_AMP 80
 
 #define FFT_ENC 512
 #define FFT_DEC 512
-#define V_THRESH 6.0
-#define V_THRESH_LIN (powf(10.0f, V_THRESH * 0.1f))
 #define LPC_ORD 10
 
-#define P_MAX_S 0.0200f
 
 #define SAMP_RATE 8000
 #define N_SAMP 80
 #define M_PITCH 320
 #define P_MIN 20
 #define P_MAX 160
-#define W0_MIN ((2.0 * M_PI) / 160.0)
-#define W0_MAX ((2.0 * M_PI) / 20.0)
 #define NW 279
 #define TW 40
 
 #define PMAX_M 320
-#define COEFF 0.95
 #define PE_FFT_SIZE 512
 #define DEC 5
 #define NDEC (M_PITCH / DEC)
-#define T 0.1
-#define CNLP 0.3
 #define NLP_NTAP 48
 #define NLP_NPHASE DEC
 #define NLP_TAPS_PP ((NLP_NTAP + DEC - 1) / DEC)
@@ -61,30 +60,11 @@
 #define WO_LEVELS (1 << WO_BITS)
 #define E_BITS 5
 #define E_LEVELS (1 << E_BITS)
-#define E_MIN_DB -10.0
-#define E_MAX_DB 40.0
 #define LSPD_SCALAR_INDEXES 10
-
-#define LPCPF_GAMMA 0.5
-#define LPCPF_BETA 0.2
-#define LPCPF_TWO_BETA (2.0 * LPCPF_BETA)
-#define LSP_DELTA1 0.01
-#define BG_THRESH 40.0
-#define BG_BETA 0.1
-#define BG_MARGIN 6.0
-#define LPC_ENERGY_FLOOR 1e-6f
-
-#define FFT_R (TWO_PI / FFT_ENC)
-#define FFT_1_R (FFT_ENC / TWO_PI)
 
 #define CODEC2_RAND_MAX 32767
 
-#define FFT_FWD_MEM_BYTES 4360
-#define FFTR_MEM_BYTES 5408
-
-/* asserts */
-/* this is the exact Codec2 3200 bps configuration */
-/* changing any of these parameters requires DSP math modification and buffer resizing */
+/* asserts: this is the exact Codec2 3200 bps configuration */
 _Static_assert(BYTES_PER_FRAME == 8, "Codec2 3200 only");
 _Static_assert(LPC_ORD == 10, "Codec2 3200 assumes LPC_ORD == 10");
 _Static_assert(MAX_AMP >= 80, "MAX_AMP must be >= 80 for Codec2 3200");
@@ -98,69 +78,118 @@ _Static_assert(WO_BITS <= 8, "encode_Wo() assumes <= 8-bit fields");
 _Static_assert(E_BITS <= 8, "encode_energy() assumes <= 8-bit fields");
 _Static_assert(TW <= N_SAMP / 2, "Parzen window ramp too long");
 
+/* ------------------------------------------------------------------ */
+/* Fixed-point constants                                              */
+/* ------------------------------------------------------------------ */
+
+/* angles, Q24 radians */
+#define TWO_PI_Q24 105414357             /* 2*pi */
+#define W0_MIN_Q24 658840                /* 2*pi/160 */
+#define W0_MAX_Q24 5270718               /* 2*pi/20 */
+#define WO_RANGE_Q24 (W0_MAX_Q24 - W0_MIN_Q24)
+#define WO_60HZ_Q24 790608               /* 60 * 2*pi / 8000 */
+#define LPC_150HZ_Q24 1976519            /* pi * 150 / 4000 */
+#define WO_GUARD_Q24 50071820            /* 0.95 * pi */
+#define LSP_INIT_Q24 4791562             /* pi / (LPC_ORD + 1) */
+#define LSP_ORDER_SWAP_Q24 1677722       /* 0.1 rad */
+
+/* FFT bin mapping: Wo (Q24) -> harmonic centre bin (Q20) */
+#define FFT_BINS_PER_RAD_Q24 1367130551  /* 512 / (2*pi) * 2^24 */
+
+/* voicing decision thresholds */
+#define V_THRESH_LIN_Q20 4174456         /* 10^0.6 (V_THRESH = 6 dB) */
+#define UV_LOW_Q20 104858                /* 0.1 */
+#define UV_4DB_Q20 417446                /* 10^-0.4 */
+
+/* NLP */
+#define COEFF_Q15 31130                  /* notch filter coefficient 0.95 */
+#define CNLP_Q20 314573                  /* 0.3 */
+
+/* energy: log2 domain, Q16 */
+#define LOG2_TO_DB10_Q16 197283          /* 10*log10(2) */
+#define DB10_TO_LOG2_Q16 21771           /* 1 / (10*log10(2)) */
+#define E_MIN_DB_Q16 (-655360)           /* -10 dB */
+#define E_DB_STEP_Q16 102400             /* 50 dB / 32 levels = 1.5625 dB */
+#define E_ZERO_FLOOR_LOG2_Q16 (-2612471) /* log2(1e-12) */
+#define BG_THRESH_DB_Q16 2621440         /* 40 dB */
+#define BG_MARGIN_DB_Q16 393216          /* 6 dB */
+#define DB20_TO_LOG2_Q16 10885           /* log2(10)/20, for 10^(x/20) */
+
+/* LPC post filter */
+#define LPCPF_GAMMA_Q30 536870912        /* 0.5 */
+#define LPCPF_TWO_BETA_Q16 26214         /* 0.4 */
+#define PWR_A2G_Q16 13107                /* 0.2 (log2 weighting of A2g) */
+#define PWR_A2_Q16 78643                 /* 1.2 (log2 weighting of A2) */
+#define A2_FLOOR_Q48 281474977           /* 1e-6, Q48 (A2 is |FFT(ak)|^2) */
+#define BOOST_1000_Q8 502                /* 1.96 low-frequency boost */
+#define A_CLAMP_Q4 (1 << 20)             /* max model amplitude (unused in
+                                            practice; guards the inverse FFT) */
+
+/* decoder */
+#define PHASE_PER_RAND 131076            /* 2^32 / CODEC2_RAND_MAX */
+
+/* LSP root finding */
+#define LSP_DELTA1_Q30 10737418          /* 0.01 */
+
 /* consts */
-extern const float nlp_fir[NLP_NTAP];
-extern const float bw_gamma[LPC_ORD + 1];
+extern const int32_t bw_gamma_q30[LPC_ORD + 1];
+extern const int32_t nlp_fir_poly_q20[NLP_NPHASE * NLP_TAPS_PP];
 extern const uint16_t delta_lsp_cb[LPC_ORD][32];
 
-typedef kiss_fft_cpx complex_t;
+typedef cpx_q_t complex_t;
+
+/* L = floor(pi / Wo); wo is radians Q24 */
+static inline int wo_to_L(int32_t wo)
+{
+    return (int)(((int64_t)PI_Q24 << 24) / wo >> 24);
+}
 
 typedef struct model_t
 {
-    float Wo;
+    int32_t Wo;               /* radians Q24 */
     int L;
-    float A[MAX_AMP + 1];
+    int32_t A[MAX_AMP + 1];   /* harmonic amplitudes, speech units Q4 */
     int voiced;
 } model_t;
 
 typedef struct nlp_t
 {
-    float w[PMAX_M / DEC];
-    float sq[PMAX_M];
-    float sq_fir[NDEC];
-    float mem_x, mem_y;
-    kiss_fftr_cfg fftr_cfg;
-    float fftr_buff[PE_FFT_SIZE];
-    complex_t Fw[PE_FFT_SIZE / 2 + 1];
+    int16_t w[NDEC];          /* decimation window, Q15 */
+    int32_t sq[PMAX_M];       /* squared speech, Q0 */
+    int32_t sq_fir[NDEC];     /* decimated FIR output, Q0 */
+    int32_t mem_x, mem_y;     /* notch filter memory, Q0 */
+    int32_t fftr_buff[PE_FFT_SIZE]; /* FFT input, NLP pre-scaled */
+    int64_t Fw[PE_FFT_SIZE / 2 + 1]; /* power spectrum */
 } nlp_t;
 
 typedef struct codec2_encoder_t
 {
-    float w[M_PITCH];
-    float W[FFT_ENC];
-    float Sn[M_PITCH];
+    int16_t Sn[M_PITCH];      /* input speech history, Q0 */
+    int32_t w[M_PITCH];       /* analysis window, Q28 */
+    int32_t W[FFT_ENC];       /* window spectrum, Q16 */
+
     nlp_t nlp;
 
-    float prev_f0_enc;
+    int32_t prev_f0_enc;      /* previous pitch estimate, Hz Q16 */
 
-    kiss_fftr_cfg fftr_fwd_cfg;
-
-    kiss_fft_cpx fft_buffer[FFT_ENC];
-
-    uint8_t fftr_fwd_mem[FFTR_MEM_BYTES];
+    complex_t fft_buffer[FFT_ENC/2 + 1 + 256]; /* 513: 257 freq out + 256 scratch */
 } codec2_encoder_t;
 
 typedef struct codec2_decoder_t
 {
     uint32_t next_rn;
 
-    float Sn_[2 * N_SAMP];
-    float Pn[2 * N_SAMP];
+    int32_t Sn_[2 * N_SAMP];  /* synthesis overlap-add buffer, Q8 */
+    int16_t Pn[2 * N_SAMP];   /* Parzen window, Q15 */
 
-    float ex_phase;
-    float bg_est;
+    uint32_t ex_phase;        /* excitation fundamental phase, 2^32 = 2*pi */
+    int32_t bg_est;           /* background noise estimate, dB Q16 */
 
     model_t prev_model_dec;
-    float prev_lsps_dec[LPC_ORD];
-    float prev_e_dec;
+    int32_t prev_lsps_dec[LPC_ORD]; /* radians Q24 */
+    int32_t prev_e_dec;       /* energy, log2 Q16 */
 
-    kiss_fftr_cfg fftr_fwd_cfg;
-    kiss_fftr_cfg fftr_inv_cfg;
-
-    kiss_fft_cpx fft_buffer[FFT_DEC];
-
-    uint8_t fftr_fwd_mem[FFTR_MEM_BYTES];
-    uint8_t fftr_inv_mem[FFTR_MEM_BYTES];
+    complex_t fft_buffer[2 * FFT_DEC / 2 + 1 + 256]; /* 769: 256 a + 256 scratch + 257 Awg */
 } codec2_decoder_t;
 
 typedef struct codec2_t
@@ -168,7 +197,5 @@ typedef struct codec2_t
     codec2_encoder_t encoder;
     codec2_decoder_t decoder;
 } codec2_t;
-
-_Static_assert(sizeof(((codec2_t *)0)->encoder.fft_buffer) >= FFT_ENC * sizeof(kiss_fft_cpx), "fft_buffer too small for FFT_ENC scratch");
 
 #endif /* CODEC2_VHF_INTERNAL_H */

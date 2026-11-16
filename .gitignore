@@ -2,3 +2,4 @@ build/
 *.o
 *.a
 build-size/
+build*/

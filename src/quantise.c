@@ -73,90 +73,76 @@ int unpack(
 	return (origWidth > 1) ? gray_to_binary(field) : field;
 }
 
-int encode_Wo(float Wo, uint8_t bits)
+int encode_Wo(int32_t Wo, uint8_t bits)
 {
 	int Wo_levels = 1 << bits;
 
-	float norm = (Wo - W0_MIN) / (W0_MAX - W0_MIN);
-	int index = (int)(Wo_levels * norm + 0.5f);
+	/* norm = (Wo - W0_MIN) / (W0_MAX - W0_MIN), all Q24 */
+	int64_t num = (int64_t)Wo - W0_MIN_Q24;
+	int64_t index = (num * Wo_levels * 2 + WO_RANGE_Q24) / (2 * WO_RANGE_Q24);
 
 	if (index < 0)
 		index = 0;
 	else if (index > Wo_levels - 1)
 		index = Wo_levels - 1;
 
-	return index;
+	return (int)index;
 }
 
-float decode_Wo(int index, int bits)
+int32_t decode_Wo(int index, int bits)
 {
 	int Wo_levels = 1 << bits;
-	float step = (W0_MAX - W0_MIN) / Wo_levels;
 
-	// note: the return value should be
-	// `W0_MIN + step * (index + 0.5f)`
-	// to achieve symmetry with the encoder,
-	// but for some reason, it lowers ViSQOL MOS slightly
-	return W0_MIN + step * index;
+	/* Wo = W0_MIN + index * range / levels, Q24 */
+	return W0_MIN_Q24 + (int32_t)(((int64_t)WO_RANGE_Q24 * index) / Wo_levels);
 }
 
-int encode_energy(float e, int bits)
+int encode_energy(int32_t Elog, int bits)
 {
 	const int e_levels = 1 << bits;
-	const float e_min = E_MIN_DB;
-	const float e_max = E_MAX_DB;
 
-	float e_db = 10.0f * log10f(fmaxf(e, 1e-12f)); // avoid log(0)
-	float norm = (e_db - e_min) / (e_max - e_min);
-
-	int index = (int)(e_levels * norm + 0.5f);
+	/* e_db (Q16) = Elog * 10*log10(2); index = round((e_db - E_MIN) * levels / 50dB) */
+	int64_t e_db = ((int64_t)Elog * LOG2_TO_DB10_Q16) >> 16;
+	int64_t num = (e_db - E_MIN_DB_Q16) * e_levels * 2 + 50 * 65536;
+	int64_t index = num / (2 * 50 * 65536);
 
 	if (index < 0)
 		index = 0;
 	else if (index > e_levels - 1)
 		index = e_levels - 1;
 
-	return index;
+	return (int)index;
 }
 
-float decode_energy(int index, int bits)
+int32_t decode_energy(int index, int bits)
 {
-	const int e_levels = 1 << bits;
-	const float step = (E_MAX_DB - E_MIN_DB) / e_levels;
+	/* e_db = E_MIN + index * 50dB/levels (E_DB_STEP_Q16 is exact in
+	   Q16 dB since 50*65536/32 = 102400); Elog = e_db / (10*log10 2) */
+	int e_levels = 1 << bits;
+	int64_t e_db = E_MIN_DB_Q16 + (int64_t)index * ((50 * 65536) / e_levels);
 
-	// note: just like decode_Wo() above
-	// (index + 0.5f) would assure symmetry with the encoder
-	// but for some reason it breaks MOS
-	float e_db = E_MIN_DB + step * index;
-	return POW10F(e_db / 10.0f);
+	return (int32_t)((e_db * DB10_TO_LOG2_Q16) >> 16);
 }
 
-void encode_lspds_scalar(int *indexes, const float *lsp)
+void encode_lspds_scalar(int *indexes, const int32_t *lsp)
 {
-	static const float k = 4000.0f / M_PI;
 	int last_q_hz = 0;
 
 	for (int i = 0; i < LPC_ORD; i++)
 	{
 		const uint16_t *cb = delta_lsp_cb[i];
-		float lsp_hz = k * lsp[i];
-		float target = (i == 0) ? lsp_hz : (lsp_hz - (float)last_q_hz);
+		/* lsp_hz = lsp * 4000/pi: lsp_Q24 * 4000 / PI_Q24, exact */
+		int lsp_hz = (int)(((int64_t)lsp[i] * 4000 + PI_Q24 / 2) / PI_Q24);
+		int target = (i == 0) ? lsp_hz : (lsp_hz - last_q_hz);
 
-		// given the Poisson-like probability density function of the LSF indices
-		// and strictly monotonic codebooks,
-		// it seems reasonable to use binary search
-		// indices for LSF 7, 8, and 9 (counting from 1)
-		// have high peaks at cb[31], so we can detect that early
-		// modes for LSF indices: {8, 4, 6, 11, 10, 8, 15, 13, 14, 11}
-		// (measured using 500 random files from LibriSpeech)
 		int best_j;
 
 		/* early saturation detection */
-		if (target <= (float)cb[0])
+		if (target <= (int)cb[0])
 		{
 			best_j = 0;
 		}
-		else if (target >= (float)cb[31])
+		else if (target >= (int)cb[31])
 		{
 			best_j = 31;
 		}
@@ -167,14 +153,14 @@ void encode_lspds_scalar(int *indexes, const float *lsp)
 			while (lo + 1 < hi)
 			{
 				int mid = (lo + hi) >> 1;
-				if ((float)cb[mid] <= target)
+				if ((int)cb[mid] <= target)
 					lo = mid;
 				else
 					hi = mid;
 			}
 
-			float e_lo = fabsf((float)cb[lo] - target);
-			float e_hi = fabsf((float)cb[hi] - target);
+			int e_lo = cb[lo] > target ? cb[lo] - target : target - cb[lo];
+			int e_hi = cb[hi] > target ? cb[hi] - target : target - cb[hi];
 
 			/* lower index wins ties */
 			best_j = (e_lo <= e_hi) ? lo : hi;
@@ -189,21 +175,20 @@ void encode_lspds_scalar(int *indexes, const float *lsp)
 	}
 }
 
-void decode_lspds_scalar(float *lsp_, const int *indexes)
+void decode_lspds_scalar(int32_t *lsp_, const int *indexes)
 {
 	int lsp_hz = 0;
-	static const float k = M_PI / 4000.0f;
 
 	for (int i = 0; i < LPC_ORD; i++)
 	{
 		lsp_hz += delta_lsp_cb[i][indexes[i]];
-		lsp_[i] = k * (float)lsp_hz;
+		/* lsp = lsp_hz * pi/4000, Q24 */
+		lsp_[i] = (int32_t)(((int64_t)lsp_hz * PI_Q24 + 2000) / 4000);
 	}
 }
 
 /* ------------------------------------------------------------------ */
 /* 1600 bps mode: scalar LSP quantisation, check/bw helpers.          */
-/*  Bit-exact port of the reference Codec2 implementation.            */
 /* ------------------------------------------------------------------ */
 
 int lsp_bits(int i)
@@ -211,16 +196,17 @@ int lsp_bits(int i)
 	return lsp_scalar_cb[i].log2m;
 }
 
-/* nearest-neighbour scalar quantiser (reference quantise(), k = 1) */
-static int quantise_scalar(const uint16_t *cb, float x, int m)
+/* nearest-neighbour scalar quantiser; codebook entries and lsp_hz are
+   integer Hz, so the comparison is exact */
+static int quantise_scalar(const uint16_t *cb, int x, int m)
 {
 	int besti = 0;
-	float beste = 1E32f;
+	int beste = 1 << 30;
 
 	for (int j = 0; j < m; j++)
 	{
-		float diff = (float)cb[j] - x;
-		float e = diff * diff;
+		int diff = (int)cb[j] - x;
+		int e = diff * diff;
 
 		if (e < beste)
 		{
@@ -232,55 +218,58 @@ static int quantise_scalar(const uint16_t *cb, float x, int m)
 	return besti;
 }
 
-void encode_lsps_scalar(int *indexes, const float *lsp)
+void encode_lsps_scalar(int *indexes, const int32_t *lsp)
 {
-	float lsp_hz[LPC_ORD];
+	int lsp_hz[LPC_ORD];
 
 	/* convert from radians to Hz so we can use human readable
 	   frequencies */
-
 	for (int i = 0; i < LPC_ORD; i++)
-		lsp_hz[i] = (4000.0 / M_PI) * lsp[i];
+		lsp_hz[i] = (int)(((int64_t)lsp[i] * 4000 + PI_Q24 / 2) / PI_Q24);
 
 	/* scalar quantisers */
 
 	for (int i = 0; i < LPC_ORD; i++)
 		indexes[i] = quantise_scalar(lsp_scalar_cb[i].cb, lsp_hz[i],
-					     lsp_scalar_cb[i].m);
+				     lsp_scalar_cb[i].m);
 }
 
-void decode_lsps_scalar(float *lsp_, const int *indexes)
+void decode_lsps_scalar(int32_t *lsp_, const int *indexes)
 {
-	float lsp_hz[LPC_ORD];
+	int lsp_hz[LPC_ORD];
 
 	for (int i = 0; i < LPC_ORD; i++)
-		lsp_hz[i] = (float)lsp_scalar_cb[i].cb[indexes[i]];
+		lsp_hz[i] = (int)lsp_scalar_cb[i].cb[indexes[i]];
 
 	/* convert back to radians */
 
 	for (int i = 0; i < LPC_ORD; i++)
-		lsp_[i] = (M_PI / 4000.0) * lsp_hz[i];
+		lsp_[i] = (int32_t)(((int64_t)lsp_hz[i] * PI_Q24 + 2000) / 4000);
 }
 
-void check_lsp_order(float *lsp)
+void check_lsp_order(int32_t *lsp)
 {
 	for (int i = 1; i < LPC_ORD; i++)
 		if (lsp[i] < lsp[i - 1])
 		{
-			float tmp = lsp[i - 1];
+			int32_t tmp = lsp[i - 1];
 
-			lsp[i - 1] = lsp[i] - 0.1f;
-			lsp[i] = tmp + 0.1f;
+			lsp[i - 1] = lsp[i] - LSP_ORDER_SWAP_Q24;
+			lsp[i] = tmp + LSP_ORDER_SWAP_Q24;
 			i = 1; /* start check again, as swap may have caused out of order */
 		}
 }
 
-void bw_expand_lsps(float *lsp, float min_sep_low, float min_sep_high)
+void bw_expand_lsps(int32_t *lsp, int min_sep_low, int min_sep_high)
 {
+	/* separations are integer Hz; convert to radians Q24 once */
+	int32_t sep_low_q24 = (int32_t)(((int64_t)min_sep_low * PI_Q24 + 2000) / 4000);
+	int32_t sep_high_q24 = (int32_t)(((int64_t)min_sep_high * PI_Q24 + 2000) / 4000);
+
 	for (int i = 1; i < 4; i++)
 	{
-		if ((lsp[i] - lsp[i - 1]) < min_sep_low * (M_PI / 4000.0))
-			lsp[i] = lsp[i - 1] + min_sep_low * (M_PI / 4000.0);
+		if ((lsp[i] - lsp[i - 1]) < sep_low_q24)
+			lsp[i] = lsp[i - 1] + sep_low_q24;
 	}
 
 	/* As quantiser gaps increased, larger BW expansion was required
@@ -289,7 +278,7 @@ void bw_expand_lsps(float *lsp, float min_sep_low, float min_sep_high)
 
 	for (int i = 4; i < LPC_ORD; i++)
 	{
-		if (lsp[i] - lsp[i - 1] < min_sep_high * (M_PI / 4000.0))
-			lsp[i] = lsp[i - 1] + min_sep_high * (M_PI / 4000.0);
+		if (lsp[i] - lsp[i - 1] < sep_high_q24)
+			lsp[i] = lsp[i - 1] + sep_high_q24;
 	}
 }

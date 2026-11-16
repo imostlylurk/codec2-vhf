@@ -3,12 +3,12 @@
 
 #include "codec2_internal.h"
 
-float nlp(
-    nlp_t *restrict nlp,
-    const float *restrict Sn, /* input speech vector */
-    float *restrict pitch,    /* estimated pitch period in samples at current Fs    */
-    float *restrict prev_f0   /* previous pitch f0 in Hz, memory for pitch tracking */
-);
+void nlp(
+    nlp_t *nlp,
+    const int16_t *Sn,       /* input speech vector, Q0 */
+    int32_t *f0,             /* out: pitch frequency, Hz Q16 */
+    int32_t *prev_f0,        /* previous pitch f0, Hz Q16 (memory) */
+    complex_t *fft_scratch); /* caller-owned scratch, 256 complex slots */
 
 void nlp_init(nlp_t *nlp);
 
