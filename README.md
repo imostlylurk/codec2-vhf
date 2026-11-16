@@ -1,78 +1,102 @@
-# codec2-vhf
+# codec2-vhf (fixed-point)
 
-Optimised Codec2 vocoder modes for VHF digital voice, derived from
+Fixed-point Codec2 vocoder modes for VHF digital voice, derived from
 [Codec2-mod](https://github.com/M17-Project/Codec2-mod) (M17-Project) and
 [Codec2](https://github.com/drowe67/codec2) by David Rowe VK5DGR et al.
 LGPL 2.1 - see LICENSE.
 
+**This build contains no floating-point arithmetic.** Every DSP stage
+runs in integer Q-format fixed point; the library compiles with zero
+floating-point instructions (verified by disassembly scan of the
+Cortex-M4 build), making it suitable for MCUs without an FPU, such as
+the HR-C7000 (CSKY) targeted by future OpenRTX radios - where the
+float codec cannot run at all without soft-float emulation.
+
 ## Modes
 
-| Mode | Frame  | Bits | Bitstream                         |
-|------|--------|------|-----------------------------------|
-| 3200 | 20 ms  | 64   | bit-exact with reference Codec2   |
-| 1600 | 40 ms  | 64   | bit-exact with reference Codec2   |
-| 1300 | 40 ms  | 52   | bit-exact with reference Codec2   |
+| Mode | Frame  | Bits | Bitstream format                   |
+|------|--------|------|-------------------------------------|
+| 3200 | 20 ms  | 64   | identical to reference Codec2      |
+| 1600 | 40 ms  | 64   | identical to reference Codec2      |
+| 1300 | 40 ms  | 52   | identical to reference Codec2      |
+
+The bit-packing, Gray coding, codebooks and frame layouts are unchanged
+from the reference, so `.c2` files interoperate with stock
+`c2enc`/`c2dec`/`c2play` in both directions.
 
 ## What changed relative to Codec2-mod
 
-- **1600 and 1300 bps modes added**, using the same optimised
-  structure as the 3200 mode: static, fixed-size state (no heap),
-  split encoder/decoder states, KISS FFT, and the same 10 ms internal
-  analysis pipeline.  The 1600 encoder packs 4 voicing bits (10 ms
-  update), two Wo + energy pairs (20 ms update) and one scalar-LSP
-  vector (40 ms update).  The 1300 encoder samples Wo, energy and
-  scalar LSPs once per 40 ms frame.  Both decoders interpolate the
-  in-between 10 ms sub-frames.  These modes are bit-exact ports of the
-  reference Codec2 framing and scalar-LSP quantiser onto the
-  Codec2-mod structure.
-- **API renamed** `codec2_*` -> `codec2_vhf_*` with explicit per-mode
-  entry points (`codec2_vhf_encode_3200/1600/1300`, ...), avoiding
-  symbol collisions when linking alongside reference libcodec2.
+- **Full fixed-point conversion in this branch.** All DSP stages
+  (FFT, LPC/Levinson, LSP root search, NLP pitch estimator, MBE voicing,
+  quantisers, synthesis) were rewritten from `float` to integer Q-format
+  arithmetic.  The float KISS FFT was replaced by a purpose-built
+  fixed-point radix-2 real FFT (`fft_fixed.c`) with compile-time Q31
+  twiddles.  `fp_math.c` provides integer sin/cos (1024-entry
+  quarter-wave table + lerp, ~3e-7 error), sqrt, log2, exp2; `util.c`
+  keeps the acos polynomial counterpart of the float tree's
+  `fast_acosf()`.
+- **1600 and 1300 bps modes** carried over from the float tree, fixed
+  point too.
+- **API unchanged**: `codec2_vhf_*` entry points, static caller-owned
+  states, no heap.
+- **Fixed-point specifics**:
+  - speech/FFT domain Q16, analysis window Q28, model amplitudes Q4,
+    Wo/angles Q24, LPCs Q24, phases as uint32 turns (2^32 = 2*pi),
+    energies in the log2 Q16 domain, post-filter normalization gain
+    Q22 (a Q6 gain quantized quiet-frame harmonics audibly; see the
+    Q-format notes below).
+  - The energy quantiser, LSP-delta quantiser and interpolation work
+    in the log2 domain, so no powf/log10f calls are needed anywhere.
+  - The NLP pitch estimator FFT input uses per-frame block floating
+    point (all decisions below are ratios, so the scale cancels).
+  - The LSP root search walks the Chebyshev interval with
+    round-to-nearest-even emulation of the float32 grid, keeping the
+    encoder's quantiser decisions aligned with the float reference.
 - **Build and tooling**: CMake build, `c2vhfenc`/`c2vhfdec` file tools,
-  in-process test suite, host benchmark, and Cortex-M4 static
-  footprint analysis.
-- **`.c2` file interop**: the tools write and honour the standard
-  codec2 file header, so encoded files interoperate with stock
-  `c2enc`/`c2dec`/`c2play`.
-- `-ffp-contract=off` pinned for reproducible float math on
-  FMA-capable targets.
-- Optional `C2VHF_DUMP_HOOKS` build with per-sub-frame decoder
-  parameter dumps for differential testing against the reference
-  decoder (off by default, ~2 KiB flash).
+  in-process test suite, host benchmark, Cortex-M4 footprint analysis
+  (`tools/size_report.sh` + `tools/stack_calc.py`).
 
-Everything else - the analysis pipeline, synthesis, NLP, quantisers
-and the no-heap static-state design - is Codec2-mod's, unchanged.
+## Compatibility and deviations
 
-## Conformance
+The fixed-point encoder produces a *different but interoperable*
+bitstream: frame format, codebooks and Gray code are identical, so any
+reference decoder decodes fixed-point-encoded audio correctly and vice
+versa.  Measured on 28 s of speech (LibriVox) against stock codec2
+(`c2enc`, bit-exact with the float codec2-vhf encoder per its README),
+on fresh encodes from this tree:
 
-Encoder output is bit-exact with reference Codec2 1.2, verified
-byte-for-byte against `c2enc` on `hts1a` (150 x 20 ms frames of 3200,
-75 x 40 ms frames of 1600 and 1300) and on longer speech material.
-On the decoder side, the reconstructed parameter streams (Wo, energy,
-LSPs, voicing per 10 ms sub-frame) match the reference decoder
-exactly, and waveform correlation with `c2dec` output of the same
-bitstream is 0.996+ with short-time envelope correlation 1.0000 for
-all three modes (28 s speech sample).  Decoded audio is not
-sample-identical to the reference implementation; the residual
-difference is float rounding in the restructured decoder DSP.
+- 33.7% / 46.5% / 35.5% of frames differ (3200/1600/1300); mean
+  Hamming distance 2.5-3.1 bits per differing frame, max 8-11 bits.
+- Per-parameter deviation (3200): voicing 6-7%, Wo quantiser index
+  23% (typically +-1 of 128 levels; the harmonic-sum pitch refinement
+  grid is coarser than the Wo quantiser step, so borderline frames
+  flip one index), energy 0.1%, LSP indexes 0.1-2.1%.
+- Decoder, identical bits, fixed decode vs float decode: SNR
+  -0.21 / -0.25 / -0.23 dB, waveform correlation 0.97+, level ratio
+  0.99.  The result is level-matched and free of dropouts; the
+  100 Hz frame-rate modulation ("buzz") fingerprint measures at parity
+  with the float decoder.
+- End-to-end log-spectral distance between float-decode(fixed-bits)
+  and the all-float chain: 7.1-7.3 dB median - well inside Codec2's
+  own distortion (float decode vs clean source measures ~11.5 dB with
+  the same method).
 
-Like upstream, bit-exactness of the encoded bitstream depends on the
-accuracy of the C library's `cosf()` during analysis (glibc: identical;
-newlib-nano on Cortex-M4: ~1 frame in 150 may differ).
-
-## Goals / roadmap
-
-A single, small, embedded-friendly vocoder suite for VHF digital voice:
-
-- [x] M17, Full rate voice (3200)
-- [x] M17 HR (Legacy), SLATE (1600)
-- [x] Codec2 1300 (FreeDV2400A/B)
+The remaining bitstream deviation is bounded by the float reference's
+own float32 accumulation noise; eliminating it would require emulating
+float32 semantics exactly, which defeats the purpose of a fixed-point
+build.  Whole-file waveform correlation across *different* bitstreams
+is near zero by construction (independent phase tracks); use the
+per-frame metrics above. Expect slightly inferior quality from the
+fixed-point encoder relative to float. Other radios will hear you fine;
+aliasing may become audible on very loud, near-clipping audio, but
+ordinary speech is generally fine.
 
 ## API
 
 State is owned by the caller and can be allocated statically.  No
 create/destroy, no heap.  The encoder and decoder states are separate
-objects and can run concurrently full duplex.
+objects; a full-duplex radio (concurrent RX+TX codec threads) holds
+both (21,360 B of .bss total).
 
 ```c
 #include "codec2_vhf.h"
@@ -102,7 +126,9 @@ codec2_vhf_decode_1300(&dec, speech_1300, bits1300);
 
 `c2vhfenc` / `c2vhfdec` convert between raw 8 kHz mono s16le speech
 and `.c2` files carrying the standard codec2 file header, so files
-interoperate with `c2enc`, `c2dec`, `c2play`, etc.
+interoperate with `c2enc`, `c2dec`, `c2play`, etc.  Note: `c2vhfenc`
+pads a final partial input frame with silence (stock `c2enc` drops
+it), so 1300/1600-mode files on non-multiple inputs run 20 ms longer.
 
 ```
 ./build/c2vhfenc 1600 testdata/hts1a.raw out.c2
@@ -117,97 +143,109 @@ cd build && ctest
 ```
 
 `c2vhftest` runs an in-process full-chain test of all modes
-(synthesis, encode, decode, voiced/silence energy checks).  A
-bit-exactness check against stock `c2enc` (if installed):
-
-```
-./build/c2vhfenc 3200 testdata/hts1a.raw /tmp/a.c2
-c2enc 3200 testdata/hts1a.raw /tmp/b.c2
-cmp <(tail -c +8 /tmp/a.c2) <(tail -c +8 /tmp/b.c2) && echo bit-exact
-```
+(synthetic signal, encode, decode, voiced/silence energy checks).
+The optional `-DC2VHF_DUMP_HOOKS=ON` build prints per-subframe model
+parameters under `C2VHF_DUMP=1` for debugging.
 
 ## Benchmarks
 
-Tooling: `tests/bench.c` (host timing, `cmake --build build --target bench`),
-`tools/size_report.sh` + `tools/stack_calc.py` (static Cortex-M4 footprint,
-same methodology as Codec2-mod: `-Os`, newlib-nano, `--gc-sections`,
-`-fstack-usage` call-graph analysis).  Reference figures are a from-source
-codec2 1.2 build with identical flags (`-O3 -ffp-contract=off`), heap size
-measured with a malloc counter.
+Three measurements, most-to-least authoritative.  The float baseline
+everywhere is this project's own float `main` branch; stock drowe67
+codec2 was used where a bit-exact reference encoder/decoder was needed.
 
-Host timing (x86-64, hts1a, 30 passes, avg per frame):
+**Exact Cortex-M4 instruction counts** (xPack GCC 15.2.1,
+`-Os -mcpu=cortex-m4 -mthumb`, hard-FPU `fpv4-sp-d16` for the float
+build, newlib-nano; bare-metal harnesses executing real hts1a frames
+under exact instruction-counting emulation - every instruction,
+including newlib libm/libgcc, counted):
 
-| Task  | ref 3200 | vhf 3200 | ref 1600 | vhf 1600 | ref 1300 | vhf 1300 |
-|-------|----------|----------|----------|----------|----------|----------|
-| encode| 34.6 us  | **17.1** | 74.4 us  | **33.5** | 61.9 us  | **30.7** |
-| decode| 20.9 us  | 22.1     | 45.8 us  | **43.8** | 42.2 us  | 44.9     |
+| Task  | fixed instr/frame | float instr/frame | ratio |
+|-------|-------------------|-------------------|-------|
+| encode 3200 | 457,269   | 350,701  | 1.30x |
+| decode 3200 | 548,772   | 393,695  | 1.39x |
+| encode 1600 | 909,974   | 650,480  | 1.40x |
+| decode 1600 | 1,131,803 | 795,705  | 1.42x |
+| encode 1300 | 829,628   | 620,952  | 1.34x |
+| decode 1300 | 1,110,371 | 791,065  | 1.40x |
 
-The encoder runs ~2x faster than reference in every mode (matching the
-2.7x Codec2-mod measured on STM32); on the host the decoder advantage
-of the mod mostly disappears.  Notably, per second of audio every mode
-costs about the same to encode: the 10 ms analysis pipeline dominates,
-and the longer frames of 1600/1300 exactly compensate for their extra
-analyses.
+For real-time 8 kHz audio that is 22-28 Mips encode / 27-28 Mips
+decode on the fixed build vs 15-16 / 20 Mips float: both fit a
+100 MHz Cortex-M4 with margin, and the fixed build stays within +50%
+of the float build in every task.  (The float build spends ~22% of
+its decode instructions in double-precision soft routines --
+`__divdf3`/`__aeabi_dadd` - from the `double` intermediates the
+float tree deliberately retains.)
 
-RAM (static, caller-owned; identical for all three modes since the
-analysis/synthesis state is shared):
+**Host timing** (x86-64, both `-O3`, same input, interleaved runs):
+encode 28.6/56.7/51.6 us and decode 36.6/72.9/~74 us per frame
+(3200/1600/1300) vs float 23.2/45.7/41.1 and 29.7/59.3/~59 us
+(1.23-1.30x).  Host numbers flatter the fixed build - x86 executes
+64-bit multiplies in one cycle - so the M4 table above is the one to
+quote.
 
-| State               | codec2-vhf        | reference (heap, measured) |
-|---------------------|-------------------|----------------------------|
-| encoder-only        | 20,040 B          | 30,748 B (enc+dec in one)  |
-| decoder-only        | 16,600 B          | (same instance)            |
-| full duplex         | 36,640 B          | 30,748 B                   |
+**Memory, in OpenRTX integration terms** (verified against OpenRTX's
+`CODEC2_THREAD_STKSIZE` = 16,384 B codec thread, which by OpenRTX's
+own design never carries the codec state - stock codec2 heap-allocates
+it, and the 5 KB mic buffer is heap'd with "the stack isn't big
+enough"):
 
-Reference is smaller for full duplex, but an encoder-only or
-decoder-only build (modem separate from codec) saves 35-46 % RAM.
-Extra modes cost no additional state.
+- Codec states are caller-owned statics (.bss): 13,856 B encoder,
+  7,504 B decoder, 21,360 B full duplex (vs 20,040 / 16,600 / 36,640
+  for the float tree).
+- The codec call chain inside the 16 KiB codec-thread stack measures
+  at most 1,728 B (encode) / 1,632 B (decode) worst-case by
+  `-fstack-usage` call-graph analysis of the Cortex-M4 build --
+  ~14 KiB of headroom.
+- Flash (text, -Os, newlib-nano, --gc-sections): 19.2/19.5/19.3 KiB
+  per-mode images, 21.2 KiB all-modes - 35% smaller than the float
+  tree (29.8-32.8 KiB).
 
-Flash (Cortex-M4 -Os, newlib-nano, `--gc-sections`, GCC 16.2 - Codec2-mod
-measured 23.8 KiB for 3200 on an older toolchain, so compare deltas,
-not absolutes):
+The 1600/1300 decoders synthesise their four 10 ms subframes on the
+fly, holding one working `model_t` instead of four, and the large
+per-subframe buffers (the `Aw` spectrum from `aks_to_mag2`, the `H`/`P`
+harmonic phase arrays, the IFFT scratch) live at disjoint lifetimes
+inside the shared decoder `fft_buffer` instead of on the stack.  The
+aks_to_mag2 per-bin loop avoids int64 division entirely by deriving
+the inverse-power spectrum from already-computed log2 values.  This
+targets the HR-C7000 CSKY MCU where int64 division is a 30-60 cycle
+software routine.
 
-| Image      | text (flash) |
-|------------|--------------|
-| 3200 only  | 30,596 B     |
-| 1600 only  | 30,980 B     |
-| 1300 only  | 31,036 B     |
-| all modes  | 33,588 B     |
+## Fixed-point implementation notes
 
-A single additional mode costs about 0.4 KiB (it reuses the entire
-analysis/synthesis pipeline); shipping all three costs about 2.9 KiB
-over 3200-only (encode/decode frame logic plus the scalar-LSP
-quantiser and codebooks used by 1600/1300).
-
-Worst-case stack (deepest call path from `-fstack-usage` frames):
-
-| Entry point          | stack |
-|----------------------|-------|
-| encode, any mode     | ~1.0 KiB |
-| decode 3200          | 4.97 KiB |
-| decode 1600          | 5.81 KiB |
-| decode 1300          | 5.82 KiB |
-
-The 1600/1300 decoders use ~0.85 KiB more stack than 3200 (4x10 ms
-model/LSP/Aw interpolation arrays instead of 2x).
-
-STM32F4 projection at 100 MHz, on Codec2-mod's measurement basis
-(their measured STM32F411 @ 100 MHz, -Os: 3200 enc 5.32/5.96 ms and
-dec 7.14/9.26 ms avg/max per 20 ms frame; our per-mode costs scaled
-by measured host-timing and instruction-count ratios vs 3200):
-
-| Mode | Frame  | enc avg/max | dec avg/max | full-duplex | worst frame |
-|------|--------|-------------|-------------|-------------|-------------|
-| 3200 | 20 ms  | 5.3 / 6.0 ms | 7.1 / 9.3 ms | 62 % | 76 % |
-| 1600 | 40 ms  | 10.4 / 11.7 ms | 14.5 / 18.8 ms | 62 % | 76 % |
-| 1300 | 40 ms  | 9.6 / 10.7 ms | 14.5 / 18.8 ms | 60 % | 74 % |
-
-Per-second cost is flat across modes (the 10 ms analysis pipeline
-dominates; instruction counts show ~330k Ir per 20 ms equivalent for
-all three), so full-duplex load is mode-independent; 1300 comes out
-slightly ahead because its encoder runs one fewer LPC pass.  At
-120 MHz scale by 100/120 (e.g. ~52 % / ~50 %).  Worst-case frames
-keep ~1.3x real-time margin at 100 MHz.  These are projections from
-measurement ratios, not hardware runs.
+- `inc/fp_math.h` / `src/fp_math.c`: Q-format primitives.  Sine table
+  is compile-time; log2/exp2 use 64-entry fraction tables; sqrt is a
+  bitwise integer Newton-Raphson seeded via CLZ; `util.c` carries the
+  acos polynomial from the float implementation.
+- `src/fft_fixed.c`: radix-2 DIT complex FFT (256 pt) plus real
+  512-point forward/inverse wrappers matching the unscaled
+  kiss_fftr/kiss_fftri conventions the codec math assumes.  The
+  butterfly is instantiated per twiddle-sign so the sign folds at
+  compile time (a runtime select was worth ~14% of total decode
+  instructions on M4).  Overflow safety is documented per call site
+  (sum|x| < 2^31 bounds); the amplitude clamp `A_CLAMP_Q4` guards the
+  inverse FFT in synthesis.
+- Q-format overflow bounds for every FFT call are in
+  `inc/codec2_internal.h`.
+- Q-format lessons encoded in the code (each was a real defect):
+  - a ratio of two values carrying the same Q scale truncates to 0 or
+    1: the ear-protection limiter had this bug and *zeroed* every
+    subframe peaking above 30000 units (an audible pop/dropout);
+  - integer gains need enough fractional quanta: the post-filter
+    normalization gain in Q6 resolved a true gain of ~0.03 to 0-2
+    quanta and gated quiet-frame harmonics on and off (audible
+    roughness); it is Q22 now;
+  - unit phasors must scale by exactly 2^31 end-to-end: one extra
+    shift saturates every phasor to the int32 corners (sqrt(2)
+    magnitude, four-level phase, which sounds like a loud buzz).
+- The float reference's LSP search interval walk is emulated with
+  round-to-nearest-even on the float32 grid (`f32_round_q30`), keeping
+  quantiser decisions aligned; the remaining deviations stem from
+  float32 accumulation noise upstream in the reference.
+- The encoder analysis scratch is shared by design (speech FFT
+  scratch, NLP FFT scratch, and the Hermitian mirror of Sw all alias
+  the same tail of `fft_buffer`); the NLP therefore runs *before*
+  `dft_speech()` so the mirror survives for the pitch refinement's
+  deliberate past-Nyquist reads.
 
 ## Important notice: derivative work
 
@@ -220,8 +258,8 @@ recognizably derived from it.  All original credit for the Codec2
 design, algorithms, and implementation belongs to David Rowe and the
 Codec2 contributors; the minimal optimised 3200 extraction this
 project builds on comes from the M17-Project's Codec2-mod.  The 1600
-and 1300 bps modes are bit-exact ports of the reference Codec2
-framing and scalar-LSP quantiser onto the Codec2-mod structure.
+and 1300 bps modes are ports of the reference Codec2 framing and
+scalar-LSP quantiser onto the Codec2-mod structure.
 
 ## License
 
